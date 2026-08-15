@@ -87,8 +87,8 @@ tensor-level offload semantics and gives one familiar knob.
 ### 4.3 Resident staging arena
 
 A new device `DeviceArena` with fixed addresses holds the streaming slots. Slot capacity is
-`2 x largest streaming unit` (double buffering; the per-layer FFN unit is ~292 MiB groupwise /
-~306 MiB NVFP4, and the MTP/draft extras stay device-resident under FfnOffload). Every offloaded tensor has one fixed
+`2 x largest streaming unit` (double buffering; the double-buffered arena is ~292 MiB groupwise
+/ ~287 MiB NVFP4, and the MTP/draft extras stay device-resident under FfnOffload). Every offloaded tensor has one fixed
 slot address; resident tensors keep their addresses in the existing backing arena. Kernels and
 NVFP4 TMA descriptors are re-pointed to slot addresses at startup; because slot addresses never
 change and each round re-sends the same bytes to the same addresses, captured graphs and TMA maps
@@ -104,9 +104,8 @@ nodes, and replay re-sends the same bytes to the same fixed slot addresses, so n
 double-buffered pipeline (`g % 2` slot alternation established at load) lives inside one captured
 graph and the "one graph launch per round" property is preserved.
 
-Prefill is not graph-captured today; the same leaf staging runs eagerly per group with
-`cudaMemcpyAsync` + events on `device.load_stream`. Prefill is compute-bound, so streaming is
-largely hidden.
+Prefill is not graph-captured today; the same leaf staging runs eagerly on the round stream before
+each group's kernels. Prefill is compute-bound, so streaming is largely hidden.
 
 ### 4.5 Capacity planning
 
