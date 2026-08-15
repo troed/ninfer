@@ -260,6 +260,7 @@ GenerationService::GenerationService(ServeOptions options, LoadProgress load_pro
     engine_options.prefill_chunk        = options_.prefill_chunk;
     engine_options.kv_cache             = options_.kv_cache;
     engine_options.weight_residency    = options_.weight_residency;
+    engine_options.resident_ffn_layers = options_.resident_ffn_layers;
     engine_options.enable_vision        = options_.enable_vision;
     engine_options.use_cuda_graph       = options_.use_cuda_graph;
     engine_options.speculative          = options_.speculative;

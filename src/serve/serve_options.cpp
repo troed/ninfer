@@ -76,7 +76,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
            "[--max-request-mib N] [--request-log-jsonl FILE] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
-           "[--kv-dtype bf16|int8] [--weight-residency all|ffn] [--spec mtp|dflash --draft-tokens N] "
+            "[--kv-dtype bf16|int8] [--weight-residency all|ffn] [--n-ffn-layers N] [--spec mtp|dflash --draft-tokens N] "
            "[--default-max-tokens N] "
            "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
            "[--lm-head-draft] [--no-thinking] [--preserve-thinking] [--cors] "
@@ -194,6 +194,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.kv_cache = parse_kv_dtype(require_value("--kv-dtype"));
         } else if (arg == "--weight-residency") {
             options.weight_residency = parse_weight_residency(require_value("--weight-residency"));
+        } else if (arg == "--n-ffn-layers") {
+            options.resident_ffn_layers = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--n-ffn-layers"), "n-ffn-layers"));
         } else if (arg == "--spec") {
             options.speculative.backend =
                 product::parse_speculative_backend(require_value("--spec"));
