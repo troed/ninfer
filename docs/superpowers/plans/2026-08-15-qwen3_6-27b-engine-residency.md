@@ -1,6 +1,6 @@
 # 27B Engine Residency Option (Surface 6) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make the FfnOffload residency profile selectable through the public `ninfer::Engine` so a 27B dense identity can be loaded and decoded on a 16 GB-VRAM `sm_120a` GPU (the offload deliverable's user-facing surface).
 
@@ -34,7 +34,7 @@
 - Create: `tests/targets/qwen3_6_27b/test_engine_offload_real.cpp`
 - Modify: `tests/CMakeLists.txt`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/targets/qwen3_6_27b/test_engine_offload_real.cpp`:
 
@@ -147,13 +147,13 @@ ninfer_add_test(ninfer_qwen3_6_27b_engine_offload_real_test
 set_tests_properties(ninfer_qwen3_6_27b_engine_offload_real_test PROPERTIES SKIP_RETURN_CODE 77)
 ```
 
-- [ ] **Step 2: Build to verify it fails**
+- [x] **Step 2: Build to verify it fails**
 
 Run: `cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_CUDA_ARCHITECTURES=120a && cmake --build build --target ninfer_qwen3_6_27b_engine_offload_real_test`
 
 Expected: FAIL to compile. Errors reference members that do not exist yet: `ninfer::EngineOptions` has no member `weight_residency`, `ninfer::LoadSummary` has no member `host_bytes`/`host_capacity_bytes`, `ninfer::MemorySummary` has no member `staging`/`host_store_bytes`, and `ninfer::WeightResidency` is not declared. No other error kinds.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/targets/qwen3_6_27b/test_engine_offload_real.cpp tests/CMakeLists.txt
@@ -167,7 +167,7 @@ git commit -m "test(targets): add 27B engine offload residency scenarios"
 **Files:**
 - Modify: `include/ninfer/types.h`
 
-- [ ] **Step 1: Add the public enum and fields**
+- [x] **Step 1: Add the public enum and fields**
 
 In `include/ninfer/types.h`:
 
@@ -207,19 +207,19 @@ and immediately after that insert:
 
 No other types change. Do not touch `engine.h` — the fields flow through existing `load_summary()`/`memory_summary()` pass-throughs.
 
-- [ ] **Step 2: Build**
+- [x] **Step 2: Build**
 
 Run: `cmake --build build`
 
 Expected: full tree compiles (the Task-1 test now compiles; nothing else references the new fields yet).
 
-- [ ] **Step 3: Verify runtime RED**
+- [x] **Step 3: Verify runtime RED**
 
 Run: `NINFER_QWEN3_8_27B_WEIGHTS=$HOME/llm-models/qwen3_8_27b.ninfer /usr/bin/ctest --test-dir build --output-on-failure -R ninfer_qwen3_6_27b_engine_offload_real_test`
 
 Expected: FAIL. `Package::plan_load` still binds `AllResident` (residency not yet threaded), so on 16 GB the load throws `std::invalid_argument` "model weights require 17093490688 bytes of device memory ..." — the test exits 1. (If run where AllResident fits, the failure is instead "offload load summary does not report the pinned host store"; either is an acceptable RED.)
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add include/ninfer/types.h
@@ -235,7 +235,7 @@ git commit -m "feat(engine): add the public weight residency option and summary 
 - Modify: `src/targets/qwen3_6_35b_a3b/impl/package.cpp`
 - Modify: `src/targets/registry.cpp`
 
-- [ ] **Step 1: 27B plan_load maps the public option**
+- [x] **Step 1: 27B plan_load maps the public option**
 
 In `src/targets/qwen3_6_27b/impl/package.cpp`, replace the body of `Package::plan_load` (lines 99-104):
 
@@ -253,7 +253,7 @@ Package::LoadPlan Package::plan_load(artifact::Binder& binder, const EngineOptio
 
 `WeightResidency` resolves to `ninfer::WeightResidency` via the enclosing `ninfer` namespace; `ResidencyProfile` resolves to `Package::ResidencyProfile` inside the static member. `bindings.h` already declares the 4-arg `bind_artifact` with the residency default.
 
-- [ ] **Step 2: 35B plan_load rejects the offload value**
+- [x] **Step 2: 35B plan_load rejects the offload value**
 
 In `src/targets/qwen3_6_35b_a3b/impl/package.cpp`, at the top of the `Package::plan_load` body (line 76, before the existing `return`), insert:
 
@@ -266,7 +266,7 @@ In `src/targets/qwen3_6_35b_a3b/impl/package.cpp`, at the top of the `Package::p
 
 `<stdexcept>` is already transitively available in this file (it throws `std::runtime_error` below). No residency support is added to the 35B package.
 
-- [ ] **Step 3: validate_options guards the enum and construct_registered fills the host store**
+- [x] **Step 3: validate_options guards the enum and construct_registered fills the host store**
 
 In `src/targets/registry.cpp` `validate_options` (after the `kv_capacity` switch, before the `max_concurrency` check), insert:
 
@@ -287,7 +287,7 @@ In `construct_registered`, in the `LoadSummary summary;` fill block (after `summ
     summary.host_capacity_bytes = stats.host_capacity_bytes;
 ```
 
-- [ ] **Step 4: Build and run the offload test**
+- [x] **Step 4: Build and run the offload test**
 
 Run: `cmake --build build`
 
@@ -295,7 +295,7 @@ Run: `NINFER_QWEN3_8_27B_WEIGHTS=$HOME/llm-models/qwen3_8_27b.ninfer /usr/bin/ct
 
 Expected: engine now constructs under FfnOffload (device plan ~7 GB fits 16 GB). `load_summary().host_bytes/host_capacity_bytes` are populated. The test still FAILS because `memory_summary().staging.capacity_bytes` is 0 and `host_store_bytes` is 0 (Task 4), and `generate` has not been reached. Output includes `staging arena capacity is 0, expected 306380800`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/targets/qwen3_6_27b/impl/package.cpp src/targets/qwen3_6_35b_a3b/impl/package.cpp src/targets/registry.cpp
@@ -311,7 +311,7 @@ git commit -m "feat(engine): thread weight residency through the target load pat
 - Modify: `src/targets/qwen3_6_27b/impl/load/bindings.cpp`
 - Modify: `src/targets/qwen3_6/impl/runtime/program_impl.h`
 
-- [ ] **Step 1: ModelView carries the host-store size**
+- [x] **Step 1: ModelView carries the host-store size**
 
 In `src/targets/qwen3_6/export/ninfer/targets/qwen3_6/model_view.h`, immediately after `std::vector<StagedWeight> staged_weights;` (line 102), insert:
 
@@ -321,7 +321,7 @@ In `src/targets/qwen3_6/export/ninfer/targets/qwen3_6/model_view.h`, immediately
 
 No new include is needed (`<cstddef>` is already included; `std::size_t` is in scope). The 35B instantiation leaves the member defaulted to 0.
 
-- [ ] **Step 2: 27B LoadedModelData populates it**
+- [x] **Step 2: 27B LoadedModelData populates it**
 
 In `src/targets/qwen3_6_27b/impl/load/bindings.cpp`, inside the `LoadedModelData` ctor immediately after `runtime.staging_arena = &*staging_arena_;` (line 501), insert:
 
@@ -331,7 +331,7 @@ In `src/targets/qwen3_6_27b/impl/load/bindings.cpp`, inside the `LoadedModelData
 
 This is unconditional: for AllResident `host_capacity_bytes` is 0, matching the default. `backing.stats()` returns `const artifact::MaterializationStats&`.
 
-- [ ] **Step 3: Program memory_summary reports staging and host store**
+- [x] **Step 3: Program memory_summary reports staging and host store**
 
 In `src/targets/qwen3_6/impl/runtime/program_impl.h`, inside `ProgramImplCore::memory_summary() const noexcept` (lines 2163-2179), after the `out.workspace = ...` line and before `out.workspace_logical_peak_bytes = workspace_logical_peak_bytes;`, insert:
 
@@ -345,7 +345,7 @@ In `src/targets/qwen3_6/impl/runtime/program_impl.h`, inside `ProgramImplCore::m
 
 `model.staging_arena` is null under AllResident and for the 35B target, leaving `out.staging` default-constructed (all zeros) — byte-identical reporting for existing paths.
 
-- [ ] **Step 4: Build and run the full gate**
+- [x] **Step 4: Build and run the full gate**
 
 Run: `cmake --build build`
 
@@ -355,7 +355,7 @@ Expected: **5/5 PASS** (artifact_reader, artifact_materialization, tensor, arena
 
 > **Note for the implementer:** `exercise_offloaded_generation` runs the full graph-capture + replay decode path with the staging interleave. If this fails, it is a genuine surface-5 capture-path bug surfaced by this integration test — diagnose and fix it in this branch (it is a realistic regression introduced by the change), then re-run. Expected first run ~30-90 s (load + capture).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/targets/qwen3_6/export/ninfer/targets/qwen3_6/model_view.h src/targets/qwen3_6_27b/impl/load/bindings.cpp src/targets/qwen3_6/impl/runtime/program_impl.h
@@ -371,7 +371,7 @@ git commit -m "feat(engine): report the staging arena and host store in memory s
 - Modify: `apps/cli/options.cpp`
 - Modify: `apps/cli/main.cpp`
 
-- [ ] **Step 1: Options struct field**
+- [x] **Step 1: Options struct field**
 
 In `apps/cli/options.h`, immediately after `KvCacheStorage kv_cache = KvCacheStorage::BFloat16;` (line 32), insert:
 
@@ -379,7 +379,7 @@ In `apps/cli/options.h`, immediately after `KvCacheStorage kv_cache = KvCacheSto
     ninfer::WeightResidency weight_residency = ninfer::WeightResidency::AllResident;
 ```
 
-- [ ] **Step 2: parse helper and flag**
+- [x] **Step 2: parse helper and flag**
 
 In `apps/cli/options.cpp`, immediately after the `parse_kv_cache` function (ends line 59), insert:
 
@@ -405,7 +405,7 @@ In `usage_text`, extend the `[--kv-dtype bf16|int8] [--spec mtp|dflash --draft-t
            "       [--kv-dtype bf16|int8] [--weight-residency all|ffn] [--spec mtp|dflash --draft-tokens N]\n"
 ```
 
-- [ ] **Step 3: main.cpp mapping and printing**
+- [x] **Step 3: main.cpp mapping and printing**
 
 In `apps/cli/main.cpp`, in the `ninfer::EngineOptions engine_options;` build block (after `engine_options.kv_cache       = cli.kv_cache;`), insert:
 
@@ -427,7 +427,7 @@ In `print_generation_summary` memory block, after `print_metric("gpu weights use
     print_metric("host store", format_bytes(memory.host_store_bytes));
 ```
 
-- [ ] **Step 4: Build and smoke-test the CLI**
+- [x] **Step 4: Build and smoke-test the CLI**
 
 Run: `cmake --build build`
 
@@ -437,7 +437,7 @@ Expected: engine loads under FfnOffload on 16 GB and both printed metrics are no
 
 Also run `./build/apps/ninfer 2>&1 | head -5` to confirm the usage line renders.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/cli/options.h apps/cli/options.cpp apps/cli/main.cpp
@@ -452,7 +452,7 @@ git commit -m "feat(cli): add the weight residency option and host-store reporti
 - Modify: `docs/maintainer/weight-offload.md`
 - Modify: `docs/cli.md`
 
-- [ ] **Step 1: weight-offload.md status**
+- [x] **Step 1: weight-offload.md status**
 
 In `docs/maintainer/weight-offload.md`:
 
@@ -492,7 +492,7 @@ the 35B-A3B target rejects the offload option.
 
 3. Verify no stale statements remain: no mention that surface 6 is "not selectable" and no `1 GiB arena` / `prepare_graphs() interleaves` / `pinning deferred` text.
 
-- [ ] **Step 2: cli.md option row**
+- [x] **Step 2: cli.md option row**
 
 In `docs/cli.md`, immediately after the `--kv-dtype bf16\|int8` row (line 140), insert:
 
@@ -500,15 +500,15 @@ In `docs/cli.md`, immediately after the `--kv-dtype bf16\|int8` row (line 140), 
 | `--weight-residency all\|ffn` | offload the per-layer FFN/SwiGLU matrices to pinned host memory and stream them through the fixed staging arena during decode; required to load 27B dense identities on GPUs with less VRAM than the resident weights | `all` |
 ```
 
-- [ ] **Step 3: plan checkboxes**
+- [x] **Step 3: plan checkboxes**
 
-Mark every `- [ ]` task checkbox in this file as `- [x]`.
+Mark every `- [x]` task checkbox in this file as `- [x]`.
 
-- [ ] **Step 4: verify**
+- [x] **Step 4: verify**
 
 Run: `git diff --check` (silent expected). Confirm only the two docs files changed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/maintainer/weight-offload.md docs/cli.md docs/superpowers/plans/2026-08-15-qwen3_6-27b-engine-residency.md

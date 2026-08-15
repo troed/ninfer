@@ -141,6 +141,7 @@ measured recommendation rather than a semantic limit.
 | `--max-new N` | requested output-token limit | `128` |
 | `--device N` | CUDA device index | `0` |
 | `--kv-dtype bf16\|int8` | KV-cache storage | `bf16` |
+| `--weight-residency all\|ffn` | offload the per-layer FFN/SwiGLU matrices to pinned host memory and stream them through the fixed staging arena during decode; required to load 27B dense identities on GPUs with less VRAM than the resident weights | `all` |
 | `--spec mtp\|dflash` | speculative backend | off |
 | `--draft-tokens N` | MTP `1..5`; DFlash `1..15` | unset |
 | `--lm-head-draft` | optimized proposal head | off |

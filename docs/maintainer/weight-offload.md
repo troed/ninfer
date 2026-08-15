@@ -1,9 +1,9 @@
 # CPU/system-RAM weight offload design
 
-Status: implementation in progress. Surfaces 1-5 of the change-surface table are implemented
+Status: implementation in progress. Surfaces 1-6 of the change-surface table are implemented
 (see section 5): artifact host placement, tensor host addresses, the 27B residency profile, the
-staging arena/slot binding, and the graph-capture staging interleave. The public engine residency
-option and capacity planning (surface 6) and the remaining test/documentation surfaces (7-8) are
+staging arena/slot binding, the graph-capture staging interleave, and the public engine residency
+option with load/memory-summary reporting. The remaining test/documentation surfaces (7-8) are
 not yet implemented. Scope target is the Qwen3.6-27B dense identities (`groupwise-int` and
 `nvfp4`); the 35B-A3B MoE target is a bonus item with extra work.
 
@@ -126,7 +126,7 @@ down via the existing planner; on 16 GB the 27B KV ceiling is reduced from the 3
 | 7 | Tests | artifact binder host-placement contract tests, real-artifact load, memory_summary | new host-placement coverage |
 | 8 | Docs | `docs/cli.md`, `docs/performance.md`, model cards | option surface and measurement caveat |
 
-Status: surfaces 1-5 are implemented — binder host placement
+Status: surfaces 1-6 are implemented — binder host placement
 (`TensorPlacement::Host`, host spans in `MaterializationPlan`), materializer host store
 (`MaterializedArtifact::host_data(handle)` + host-bytes stats, pinned via `cudaMallocHost`),
 `bind_tensor` host dispatch, `Tensor`/`Weight` host addresses with view propagation, the 27B
@@ -135,12 +135,15 @@ down matrices host-only), the fixed staging arena with offloaded-tensor -> slot 
 `2 x largest-streaming-unit` device `DeviceArena` whose slot addresses never change, the
 host-placed `Weight` device planes (`payload`/`qdata`/`qhigh`/`scales`, and by extension the
 NVFP4 TMA maps) re-pointed at those slots during `LoadedModelData` construction before graph
-capture, and a `ModelView::staged_weights` slot map), and the graph-capture staging interleave:
-the shared 27B `post_mixer` leaf issues a `cudaMemcpyAsync` host->slot copy for each staged
+capture, and a `ModelView::staged_weights` slot map), the graph-capture staging interleave
+(the shared 27B `post_mixer` leaf issues a `cudaMemcpyAsync` host->slot copy for each staged
 gate/up and down before its MLP kernels, gated on `weight.host != nullptr`, so the copies become
-in-graph H2D memcpy nodes during capture and run eagerly for prefill and non-graph decode.
-FfnOffload decode now runs correctly; the residency profile is still not selectable through the
-public engine option (surface 6).
+in-graph H2D memcpy nodes during capture and run eagerly for prefill and non-graph decode), and
+the public engine residency option (`EngineOptions::weight_residency`, default `AllResident`;
+`FfnOffload` is selectable through the CLI `--weight-residency ffn`), with `LoadSummary` reporting
+the pinned host store (`host_bytes`, `host_capacity_bytes`) and `MemorySummary` reporting the
+staging arena and `host_store_bytes`. FfnOffload decode runs correctly through the public Engine;
+the 35B-A3B target rejects the offload option.
 
 Unchanged: KV cache, workspace, RequestMemory, scheduler round logic, kernels, media/frontend
 paths.
