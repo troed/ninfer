@@ -36,6 +36,10 @@ Weight bf16_row_view(const Weight& parent, std::int32_t row_begin, std::int32_t 
     view.payload         = data;
     view.payload_bytes   = static_cast<std::uint64_t>(rows) * row_bytes;
     view.qdata           = data;
+    view.host            = parent.host == nullptr
+                               ? nullptr
+                               : static_cast<const std::uint8_t*>(parent.host) +
+                                     static_cast<std::size_t>(row_begin) * row_bytes;
     view.shape[0]        = rows;
     view.padded_shape[0] = rows;
     view.n               = rows;
