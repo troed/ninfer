@@ -100,6 +100,7 @@ struct ModelView {
     DeviceArena* weights_arena = nullptr;
     DeviceArena* staging_arena = nullptr;
     std::vector<StagedWeight> staged_weights;
+    std::size_t host_store_bytes = 0;
     Weight token_embedding;
     std::array<FullLayer, FullAttentionLayers> full_layers;
     std::array<GdnLayer, GdnLayers> gdn_layers;

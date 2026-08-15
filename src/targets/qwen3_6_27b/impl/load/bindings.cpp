@@ -501,6 +501,7 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
         staging_arena_.emplace(2 * staging_unit_bytes);
         runtime.staging_arena = &*staging_arena_;
     }
+    runtime.host_store_bytes = static_cast<std::size_t>(backing.stats().host_capacity_bytes);
 
     auto& token_embedding = runtime.token_embedding;
     auto& full_layers     = runtime.full_layers;

@@ -2215,6 +2215,11 @@ MemorySummary ProgramImplCore::memory_summary() const noexcept {
     out.sequence =
         ArenaMemorySummary{persistent.capacity(), persistent.used(), persistent.peak_used()};
     out.workspace = ArenaMemorySummary{workspace_storage.capacity(), work.used(), work.peak_used()};
+    if (model.staging_arena != nullptr) {
+        DeviceArena& staging = *model.staging_arena;
+        out.staging = ArenaMemorySummary{staging.capacity(), staging.used(), staging.peak_used()};
+    }
+    out.host_store_bytes = model.host_store_bytes;
     out.workspace_logical_peak_bytes = workspace_logical_peak_bytes;
     out.cuda_graph_allowance_bytes   = graph_allowance_bytes;
     out.cuda_graph_observed_bytes    = graph_observed_bytes;
