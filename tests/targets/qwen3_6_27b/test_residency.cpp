@@ -1,6 +1,7 @@
 #include "artifact/binder.h"
 #include "artifact/materializer.h"
 #include "artifact/reader.h"
+#include "core/arena.h"
 #include "targets/qwen3_6_27b/impl/load/bindings.h"
 #include "targets/qwen3_6_27b/impl/variant.h"
 
@@ -10,11 +11,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace {
 
@@ -35,6 +38,28 @@ bool is_host_placed(const ninfer::artifact::MaterializationPlan& plan,
         if (entry.object.index == handle.index) { return true; }
     }
     return false;
+}
+
+int staged_mlp_round_matches_host(const ninfer::DeviceContext& device, WeightsProfile profile,
+                                  const DensePostMixerPayload& post_mixer) {
+    ninfer::DeviceArena io(1 << 20);
+    const ninfer::Tensor hidden = io.alloc(ninfer::DType::BF16, {TextConfig::hidden, 1});
+    ninfer::Tensor residual     = io.alloc(ninfer::DType::BF16, {TextConfig::hidden, 1});
+    ninfer::WorkspaceArena work(Variant::post_mixer_workspace_capacity_bytes(
+        profile, ninfer::targets::qwen3_6::TextPhase::Verify, 1, 1));
+    work.reset();
+    Variant::post_mixer(hidden, post_mixer, residual, ninfer::targets::qwen3_6::TextPhase::Verify,
+                        work, device.stream);
+    CUDA_CHECK(cudaStreamSynchronize(device.stream));
+    for (const ninfer::Weight& weight : {post_mixer.gate_up, post_mixer.down}) {
+        std::vector<std::byte> slot(static_cast<std::size_t>(weight.payload_bytes));
+        CUDA_CHECK(cudaMemcpy(slot.data(), weight.payload, slot.size(), cudaMemcpyDeviceToHost));
+        if (std::memcmp(slot.data(), weight.host, slot.size()) != 0) {
+            std::cerr << "a staged MLP slot does not reproduce its host payload\n";
+            return 1;
+        }
+    }
+    return 0;
 }
 
 int verify_residency(const std::filesystem::path& path, WeightsProfile profile) {
@@ -166,6 +191,12 @@ int verify_residency(const std::filesystem::path& path, WeightsProfile profile) 
         data.runtime.token_embedding.host != nullptr || data.runtime.output_head.payload == nullptr ||
         data.runtime.output_head.host != nullptr) {
         std::cerr << "a resident vocabulary weight does not carry device-only addresses\n";
+        return 1;
+    }
+    if (staged_mlp_round_matches_host(device, profile,
+                                      data.runtime.full_layers[0].post_mixer) != 0 ||
+        staged_mlp_round_matches_host(device, profile,
+                                      data.runtime.gdn_layers[0].post_mixer) != 0) {
         return 1;
     }
     return 0;
