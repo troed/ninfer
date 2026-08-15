@@ -279,6 +279,8 @@ with:
 
 `cudaMallocHost` returns page-aligned pinned memory, so `base_pad` computes to 0 and `host_store_base_ == host_store_.get()`. Keep the alignment computation as-is for robustness. The existing `store_bytes > max - pad` overflow guard stays. `<cuda_runtime.h>` is already included (line 3).
 
+NOTE (implementer deviation, verified at execution): `cudaMallocHost` packs allocations at 512-byte granularity, not 4096, so a host-store request of `store_bytes + pad` (e.g. 271 bytes in the 16-byte host-fixture test) shifted the subsequent `Slot` pinned buffers off 4096-byte alignment, breaking `read_direct`'s `direct_io_alignment` contract (`reader.cpp:230` throws "direct artifact read is not 4096-byte aligned"). The committed code therefore rounds the request up to `Reader::direct_io_alignment` (4096) via `align_up` so the host-store footprint is a 4096-multiple and subsequent pinned allocations land on 4096 boundaries:
+
 - [ ] **Step 4: Build and run to verify GREEN**
 
 Run: `cmake --build build`
