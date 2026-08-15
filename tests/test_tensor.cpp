@@ -1,4 +1,5 @@
 #include "core/tensor.h"
+#include "core/weight.h"
 
 #include <cstdint>
 #include <iostream>
@@ -150,6 +151,20 @@ int main() {
     if (dual_reshaped.host != host_base) {
         ++failures;
         std::cerr << "reshape dropped the host address\n";
+    }
+
+    ninfer::Weight dual_weight{};
+    dual_weight.qtype        = ninfer::QType::BF16_CTRL;
+    dual_weight.layout       = ninfer::QuantLayout::Contiguous;
+    dual_weight.ndim         = 2;
+    dual_weight.shape[0]     = 2;
+    dual_weight.shape[1]     = 3;
+    dual_weight.qdata        = base;
+    dual_weight.host         = host_base;
+    const ninfer::Tensor dense = ninfer::as_dense(dual_weight);
+    if (dense.host != host_base) {
+        ++failures;
+        std::cerr << "as_dense dropped the host address\n";
     }
 
     failures += expect_invalid([&] { (void)sliced.reshape({4, 4}); }, "non-contiguous reshape");
