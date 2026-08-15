@@ -1,6 +1,6 @@
 # Qwen3.6-27B Staging Arena and Slot Binding Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Surface 4 of the weight-offload work: allocate a fixed-address device staging arena, give every host-placed (offloaded) 27B FFN weight a fixed slot address, re-point the model-view `Weight` device pointers (`payload`/`qdata`/`qhigh`/`scales`) at those slots (which also re-points NVFP4 TMA maps, since TMA descriptors are encoded per-launch from `Weight.qdata`/`.scales`), and publish an offloaded-tensor → slot map that surface 5's graph interleave will consume.
 
@@ -33,7 +33,7 @@
 
 This task rewrites the `LoadedModelData` section of `verify_residency` to assert the surface-4 contract. It will **fail to compile** because `ModelView` has no `staging_arena`/`staged_weights` members yet (Task 2).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Replace the include block header at `tests/targets/qwen3_6_27b/test_residency.cpp:9-14` with:
 
@@ -128,7 +128,7 @@ Replace the entire block at `test_residency.cpp:94-117` (from `ninfer::DeviceCon
     }
 ```
 
-- [ ] **Step 2: Build the test target to verify the red state**
+- [x] **Step 2: Build the test target to verify the red state**
 
 ```bash
 cmake --build build --target ninfer_qwen3_6_27b_residency_test
@@ -136,7 +136,7 @@ cmake --build build --target ninfer_qwen3_6_27b_residency_test
 
 Expected: **compile failure** with `'class ninfer::targets::qwen3_6::ModelView<...>' has no member named 'staging_arena'` and `'staged_weights'` (the `struct StagedWeight` type also does not exist yet). Nothing else should fail — every other symbol in the block (`materialize`, `LoadedModelData`, `FullAttentionWeights`, `GdnWeights`, `data.backing.host_data`, `kTextLayers`) already exists.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/targets/qwen3_6_27b/test_residency.cpp
@@ -152,7 +152,7 @@ git commit -m "test(targets): add 27B staging arena and slot-map scenarios"
 
 Add the slot-map value type and the two `ModelView` members. This is family-owned shared surface: 35B-A3B's `ModelView` instantiation simply keeps them default (null pointer, empty vector), which is correct — 35B only ever binds `AllResident`.
 
-- [ ] **Step 1: Add the `StagedWeight` struct and the members**
+- [x] **Step 1: Add the `StagedWeight` struct and the members**
 
 In `model_view.h`, change the include block (`:8-10`) to:
 
@@ -183,7 +183,7 @@ In `ModelView` (`:84-101`), immediately after `DeviceArena* weights_arena = null
     std::vector<StagedWeight> staged_weights;
 ```
 
-- [ ] **Step 2: Build and confirm the test now compiles but still fails**
+- [x] **Step 2: Build and confirm the test now compiles but still fails**
 
 ```bash
 cmake --build build --target ninfer_qwen3_6_27b_residency_test
@@ -197,7 +197,7 @@ NINFER_QWEN3_8_27B_WEIGHTS=$HOME/llm-models/qwen3_8_27b.ninfer /usr/bin/ctest --
 
 Expected: **fails** with `FfnOffload did not allocate a staging arena` (exit 1, not 77). This is the logical red: the members exist, but the 27B constructor does not populate them yet.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/targets/qwen3_6/export/ninfer/targets/qwen3_6/model_view.h
@@ -221,7 +221,7 @@ Allocate a staging `DeviceArena` sized `2 × unit_bytes` when the plan has host-
 - `unit_bytes = align_up_256(encoded_bytes(gate_up)) + align_up_256(encoded_bytes(down))`.
 - arena capacity = `2 * unit_bytes`. Layer `g` uses buffer `g % 2`; gate_up at `buffer`, down at `buffer + align_up_256(gate_up.encoded)`.
 
-- [ ] **Step 1: Add the LoadedModelData staging-arena member**
+- [x] **Step 1: Add the LoadedModelData staging-arena member**
 
 In `bindings.h`, change the include block (`:1-15`) to add the two new includes in the existing alphabetical std/core block:
 
@@ -259,7 +259,7 @@ private:
 
 (`std::optional<DeviceArena>` needs the complete `DeviceArena` type from `core/arena.h`; the optional stays empty for `AllResident`, so no allocation happens there.)
 
-- [ ] **Step 2: Add the geometry helpers to bindings.cpp**
+- [x] **Step 2: Add the geometry helpers to bindings.cpp**
 
 In the anonymous namespace of `bindings.cpp` (after `require_positive_finite`, `:63-68`), insert:
 
@@ -304,7 +304,7 @@ void point_at_slot(Weight& weight, const void* slot, NumericFormat format, std::
 
 Note: `<numeric_limits>` is already available via `<limits>` (bindings.cpp:15); `<array>` and `<cstddef>` are already included.
 
-- [ ] **Step 3: Allocate the arena and bind slots in the LoadedModelData ctor**
+- [x] **Step 3: Allocate the arena and bind slots in the LoadedModelData ctor**
 
 In the `LoadedModelData` ctor (`bindings.cpp:448-553`), immediately after `runtime.features      = plan.features;` (`:452`), insert:
 
@@ -369,7 +369,7 @@ In the GDN branch, change `:498` the same way:
 
 Do NOT touch the MTP `post_mixer` (`:539`) — MTP MLP weights are device-placed under `FfnOffload` (`bind_mtp` uses `Device` when `features.mtp()`), so `offload` routing must not stage them; the `stage_mlp` early-return keeps `host == nullptr` weights untouched anyway, but leave that call site unchanged for clarity.
 
-- [ ] **Step 4: Build and run the residency test**
+- [x] **Step 4: Build and run the residency test**
 
 ```bash
 cmake --build build --target ninfer_qwen3_6_27b_residency_test
@@ -378,7 +378,7 @@ NINFER_QWEN3_8_27B_WEIGHTS=$HOME/llm-models/qwen3_8_27b.ninfer /usr/bin/ctest --
 
 Expected: **PASS** (exit 0). The materialize + `LoadedModelData` step fits in 16GB VRAM (FfnOffload device ~7GB + ~306MB staging arena).
 
-- [ ] **Step 5: Full tree build + full filtered gate**
+- [x] **Step 5: Full tree build + full filtered gate**
 
 ```bash
 cmake --build build
@@ -387,7 +387,7 @@ NINFER_QWEN3_8_27B_WEIGHTS=$HOME/llm-models/qwen3_8_27b.ninfer /usr/bin/ctest --
 
 Expected: all listed tests PASS (residency + artifact reader/materialization + arena + tensor). The pre-existing GPU failures (`ninfer_gdn_gating_proj_test` cudaErrorCooperativeLaunchTooLarge, `ninfer_swa_test`, `ninfer_qwen3_6_frontend_test`) are hardware/environment issues and are NOT in this filter.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/targets/qwen3_6_27b/impl/load/bindings.h src/targets/qwen3_6_27b/impl/load/bindings.cpp
@@ -402,7 +402,7 @@ git commit -m "feat(targets): bind 27B offloaded weights to fixed staging slots"
 - Modify: `docs/maintainer/weight-offload.md`
 - Modify: `docs/superpowers/plans/2026-08-15-qwen3_6-27b-staging-arena.md`
 
-- [ ] **Step 1: Full verification**
+- [x] **Step 1: Full verification**
 
 ```bash
 cmake --build build
@@ -412,7 +412,7 @@ git diff --check
 
 Expected: full build clean; listed tests PASS; `git diff --check` silent.
 
-- [ ] **Step 2: Update the design doc status**
+- [x] **Step 2: Update the design doc status**
 
 In `docs/maintainer/weight-offload.md`, section 5 Status paragraph (currently `:123-131`), replace the whole paragraph with:
 
@@ -432,11 +432,11 @@ for the graph-capture interleave. The host store is plain host memory; pinning
 yet run decode: the graph interleave of H2D memcpy nodes is surface 5.
 ```
 
-- [ ] **Step 3: Mark this plan's checkboxes complete**
+- [x] **Step 3: Mark this plan's checkboxes complete**
 
-Change every `- [ ]` in `docs/superpowers/plans/2026-08-15-qwen3_6-27b-staging-arena.md` to `- [x]`. Do not alter any prose.
+Change every `- [x]` in `docs/superpowers/plans/2026-08-15-qwen3_6-27b-staging-arena.md` to `- [x]`. Do not alter any prose.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 git diff --check
