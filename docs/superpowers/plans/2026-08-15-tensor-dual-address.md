@@ -195,6 +195,84 @@ git commit -m "feat(core): carry an optional host address on Tensor and Weight"
 
 ---
 
+### Task 2b: Propagate host through the remaining whole-object derivation sites
+
+**Files:**
+- Modify: `src/core/weight.h`
+- Modify: `src/ops/wrapper/gdn_input_proj.cpp`
+- Test: `tests/test_tensor.cpp` (uses `as_dense`)
+
+**Context:** `Tensor::host`/`Weight::host` mirror the base of the object. The four `Tensor` view ops propagate host (Task 2). Two other derivation sites rebuild a value-type view from base pointers and would silently drop host once a weight is host-backed: the canonical `Weight -> Tensor` projection `as_dense` (`src/core/weight.h:10-23`) and the GDN conv helper `flatten_columns` (`src/ops/wrapper/gdn_input_proj.cpp:114-116`). `row_view` in both target bindings does NOT need a change: it keeps `payload` at the object base, and `Weight::host` mirrors `payload`, so a row view correctly keeps the object-base host pointer. This task closes the two real gaps so the dual-address contract is coherent repo-wide before Task 4 populates host addresses.
+
+- [ ] **Step 1: Add a failing test for `as_dense` host propagation**
+
+In `tests/test_tensor.cpp`, after the existing dual-address block (after the `dual_reshaped.host` check), add:
+
+```cpp
+    ninfer::Weight dual_weight{};
+    dual_weight.qtype        = ninfer::QType::BF16_CTRL;
+    dual_weight.layout       = ninfer::QuantLayout::Contiguous;
+    dual_weight.ndim         = 2;
+    dual_weight.shape[0]     = 2;
+    dual_weight.shape[1]     = 3;
+    dual_weight.qdata        = base;
+    dual_weight.host         = host_base;
+    const ninfer::Tensor dense = ninfer::as_dense(dual_weight);
+    if (dense.host != host_base) {
+        ++failures;
+        std::cerr << "as_dense dropped the host address\n";
+    }
+```
+
+Run: `cmake --build build --target ninfer_tensor_test`
+Expected: FAIL — `dense.host` is `nullptr` (the `as_dense` projection uses the 3-arg constructor).
+
+- [ ] **Step 2: Propagate host in `as_dense`**
+
+In `src/core/weight.h`, pass the host through the 4-arg constructor at all four rank branches:
+
+```cpp
+inline Tensor as_dense(const Weight& w) {
+    const DType dt = (w.qtype == QType::FP32_CTRL) ? DType::FP32 : DType::BF16;
+    void* p        = const_cast<void*>(w.qdata);
+    switch (w.ndim) {
+    case 1:
+        return Tensor(p, w.host, dt, {w.shape[0]});
+    case 2:
+        return Tensor(p, w.host, dt, {w.shape[0], w.shape[1]});
+    case 3:
+        return Tensor(p, w.host, dt, {w.shape[0], w.shape[1], w.shape[2]});
+    default:
+        return Tensor(p, w.host, dt, {w.shape[0], w.shape[1], w.shape[2], w.shape[3]});
+    }
+}
+```
+
+- [ ] **Step 3: Propagate host in `flatten_columns`**
+
+In `src/ops/wrapper/gdn_input_proj.cpp:114-116`:
+
+```cpp
+Tensor flatten_columns(const Tensor& tensor, std::int32_t rows, ConvGeometry geometry) {
+    return Tensor(tensor.data, tensor.host, tensor.dtype, {rows, geometry.aggregate_columns});
+}
+```
+
+- [ ] **Step 4: Run the tests to verify**
+
+Run: `cmake --build build --target ninfer_tensor_test`
+Run: `/usr/bin/ctest --test-dir build --output-on-failure -R 'ninfer_tensor_test'`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/core/weight.h src/ops/wrapper/gdn_input_proj.cpp tests/test_tensor.cpp
+git commit -m "feat(core): propagate host address through weight projections"
+```
+
+---
+
 ### Task 3: Failing test for dual-address views from the artifact layer
 
 **Files:**
