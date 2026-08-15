@@ -153,8 +153,13 @@ MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan
         if (store_bytes > std::numeric_limits<std::size_t>::max() - pad) {
             throw ArtifactError("host tensor backing size is invalid");
         }
-        auto store = std::make_unique<std::byte[]>(store_bytes + pad);
-        const std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(store.get());
+        const std::size_t pinned_bytes = static_cast<std::size_t>(align_up(
+            store_bytes + pad, Reader::direct_io_alignment, "host tensor backing size is invalid"));
+        void* store_ptr       = nullptr;
+        CUDA_CHECK(cudaMallocHost(&store_ptr, pinned_bytes));
+        auto store = std::unique_ptr<std::byte[], PinnedHostStoreDeleter>(
+            static_cast<std::byte*>(store_ptr));
+        const std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(store_ptr);
         const std::size_t base_pad = static_cast<std::size_t>(
             (store_alignment - (addr % store_alignment)) % store_alignment);
         out.host_store_       = std::move(store);

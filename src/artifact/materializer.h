@@ -31,6 +31,12 @@ struct MaterializationStats {
     double upload_seconds                 = 0.0;
 };
 
+struct PinnedHostStoreDeleter {
+    void operator()(std::byte* pointer) const noexcept {
+        if (pointer != nullptr) { (void)cudaFreeHost(pointer); }
+    }
+};
+
 class MaterializedArtifact {
 public:
     MaterializedArtifact()                                           = default;
@@ -62,7 +68,7 @@ private:
     };
 
     std::unique_ptr<DeviceArena> device_arena_;
-    std::unique_ptr<std::byte[]> host_store_;
+    std::unique_ptr<std::byte[], PinnedHostStoreDeleter> host_store_;
     std::size_t host_store_bytes_ = 0;
     std::byte* host_store_base_   = nullptr;
     std::vector<ObjectStorage> objects_;

@@ -234,6 +234,12 @@ int main() {
                         host_materialized.stats().host_capacity_bytes == kHostTensor.size(),
                     "host materialization statistics are incomplete");
 
+            cudaPointerAttributes attributes{};
+            CUDA_CHECK(cudaPointerGetAttributes(&attributes,
+                                                host_materialized.host_data(host_tensor)));
+            require(attributes.type == cudaMemoryTypeHost,
+                    "host tensor payload is not pinned host memory");
+
             const auto host_view = ninfer::artifact::materialized_tensor(
                 host_materialized, host_tensor, ninfer::artifact::NumericFormat::BF16, {8});
             require(host_view.data == nullptr &&
