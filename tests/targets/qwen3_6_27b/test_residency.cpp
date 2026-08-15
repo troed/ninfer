@@ -6,12 +6,15 @@
 
 #include <ninfer/targets/qwen3_6_27b/package.h>
 
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
-#include <variant>
 #include <utility>
+#include <variant>
 
 namespace {
 
@@ -94,18 +97,68 @@ int verify_residency(const std::filesystem::path& path, WeightsProfile profile) 
     ninfer::DeviceContext device(0);
     auto materialized =
         ninfer::artifact::materialize(reader, ffn_plan.materialization, device, nullptr);
+    std::array<std::pair<ninfer::artifact::ObjectHandle, ninfer::artifact::ObjectHandle>,
+               kTextLayers>
+        mlp_handles;
+    for (std::size_t layer = 0; layer < kTextLayers; ++layer) {
+        mlp_handles[layer] = {ffn_plan.bindings.text_layers[layer].mlp.gate_up.object,
+                              ffn_plan.bindings.text_layers[layer].mlp.down.object};
+    }
     LoadedModelData data(std::move(ffn_plan.bindings), std::move(materialized));
+    if (data.runtime.staging_arena == nullptr) {
+        std::cerr << "FfnOffload did not allocate a staging arena\n";
+        return 1;
+    }
+    if (data.runtime.staged_weights.size() != 2 * kTextLayers) {
+        std::cerr << "slot map size mismatch: got " << data.runtime.staged_weights.size()
+                  << " expected " << 2 * kTextLayers << '\n';
+        return 1;
+    }
+    const auto* arena_begin = static_cast<const std::uint8_t*>(data.runtime.staging_arena->base());
+    const std::uintptr_t arena_lo = reinterpret_cast<std::uintptr_t>(arena_begin);
+    const std::uintptr_t arena_hi = arena_lo + data.runtime.staging_arena->capacity();
+    const std::size_t unit_bytes  = data.runtime.staging_arena->capacity() / 2;
+    for (std::size_t layer = 0; layer < kTextLayers; ++layer) {
+        const auto& gate_up = data.runtime.staged_weights[2 * layer];
+        const auto& down    = data.runtime.staged_weights[2 * layer + 1];
+        if (gate_up.host_source != data.backing.host_data(mlp_handles[layer].first) ||
+            down.host_source != data.backing.host_data(mlp_handles[layer].second)) {
+            std::cerr << "a slot map entry does not source from the host store object\n";
+            return 1;
+        }
+        const std::uintptr_t expected_gate =
+            arena_lo + static_cast<std::uintptr_t>((layer % 2) * unit_bytes);
+        const std::uintptr_t expected_down =
+            expected_gate + ((gate_up.bytes + 255U) & ~std::uint64_t{255});
+        if (reinterpret_cast<std::uintptr_t>(gate_up.slot) != expected_gate ||
+            reinterpret_cast<std::uintptr_t>(down.slot) != expected_down) {
+            std::cerr << "a slot address does not follow the double-buffer layer layout\n";
+            return 1;
+        }
+    }
     for (const FullAttentionWeights& full : data.runtime.full_layers) {
-        if (full.post_mixer.gate_up.host == nullptr || full.post_mixer.gate_up.payload != nullptr ||
-            full.post_mixer.down.host == nullptr || full.post_mixer.down.payload != nullptr) {
-            std::cerr << "a streamed MLP weight does not carry host-only addresses\n";
+        if (full.post_mixer.gate_up.host == nullptr || full.post_mixer.gate_up.payload == nullptr ||
+            full.post_mixer.down.host == nullptr || full.post_mixer.down.payload == nullptr) {
+            std::cerr << "a streamed MLP weight does not carry host and slot addresses\n";
+            return 1;
+        }
+        const std::uintptr_t gu = reinterpret_cast<std::uintptr_t>(full.post_mixer.gate_up.payload);
+        const std::uintptr_t dn = reinterpret_cast<std::uintptr_t>(full.post_mixer.down.payload);
+        if (gu < arena_lo || gu >= arena_hi || dn < arena_lo || dn >= arena_hi) {
+            std::cerr << "a streamed MLP weight does not point into the staging arena\n";
             return 1;
         }
     }
     for (const GdnWeights& gdn : data.runtime.gdn_layers) {
-        if (gdn.post_mixer.gate_up.host == nullptr || gdn.post_mixer.gate_up.payload != nullptr ||
-            gdn.post_mixer.down.host == nullptr || gdn.post_mixer.down.payload != nullptr) {
-            std::cerr << "a streamed MLP weight does not carry host-only addresses\n";
+        if (gdn.post_mixer.gate_up.host == nullptr || gdn.post_mixer.gate_up.payload == nullptr ||
+            gdn.post_mixer.down.host == nullptr || gdn.post_mixer.down.payload == nullptr) {
+            std::cerr << "a streamed MLP weight does not carry host and slot addresses\n";
+            return 1;
+        }
+        const std::uintptr_t gu = reinterpret_cast<std::uintptr_t>(gdn.post_mixer.gate_up.payload);
+        const std::uintptr_t dn = reinterpret_cast<std::uintptr_t>(gdn.post_mixer.down.payload);
+        if (gu < arena_lo || gu >= arena_hi || dn < arena_lo || dn >= arena_hi) {
+            std::cerr << "a streamed MLP weight does not point into the staging arena\n";
             return 1;
         }
     }
