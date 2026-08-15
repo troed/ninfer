@@ -543,7 +543,7 @@ Partial residency (`resident_ffn_layers = N`): the first N text-layer FFN
 matrices (indices 0..N-1) are bound device-resident; layers N..63 stream from the
 pinned host store through the staging arena. All 64 text-layer FFN matrices are
 byte-identical in the registered identities (gate_up 34816x5120 + down 5120x17408;
-153,190,400 B groupwise, 150,405,632 B NVFP4 per layer), so "N largest layers"
+153,190,400 B groupwise, 150,405,128 B NVFP4 per layer), so "N largest layers"
 degenerates to "any N layers", and the deterministic first-N prefix is the exact
 behavior. `staged_weights` shrinks to 2*(64-N) entries; the staging arena stays
 2 x per-layer-unit regardless of N. Resident layers are skipped by the
