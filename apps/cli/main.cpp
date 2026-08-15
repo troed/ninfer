@@ -147,6 +147,8 @@ void print_load_summary(const ninfer::LoadSummary& load, double wall_seconds) {
     print_metric("artifact file read", format_bytes(load.artifact_bytes_read));
     print_metric("weight H2D", format_bytes(load.host_to_device_bytes));
     print_metric("pinned staging peak", format_bytes(load.peak_staging_bytes));
+    print_metric("host store", format_bytes(load.host_capacity_bytes));
+    print_metric("host offloaded", format_bytes(load.host_bytes));
     print_metric("tensors/resources",
                  std::to_string(load.tensor_count) + " / " + std::to_string(load.resource_count));
 }
@@ -186,6 +188,8 @@ void print_generation_summary(const ninfer::GenerationResult& result,
     print_metric("KV page groups", std::to_string(memory.kv_capacity_page_groups) + " / " +
                                        std::to_string(memory.kv_capacity_max_page_groups));
     print_metric("gpu weights used", format_arena_used(memory.weights));
+    print_metric("gpu staging arena", format_bytes(memory.staging.capacity_bytes));
+    print_metric("host store", format_bytes(memory.host_store_bytes));
     print_metric("gpu sequence used", format_arena_used(memory.sequence));
     print_metric("kv cache dtype", format_kv_cache(memory.kv_cache));
     print_metric("kv cache payload", format_bytes(memory.kv_payload_bytes));
@@ -263,6 +267,7 @@ int main(int argc, char** argv) {
         engine_options.kv_capacity    = cli.kv_capacity;
         engine_options.prefill_chunk  = cli.prefill_chunk;
         engine_options.kv_cache       = cli.kv_cache;
+        engine_options.weight_residency = cli.weight_residency;
         engine_options.speculative    = cli.speculative;
         engine_options.enable_vision  = cli.enable_vision;
         engine_options.use_cuda_graph = cli.use_cuda_graph;
