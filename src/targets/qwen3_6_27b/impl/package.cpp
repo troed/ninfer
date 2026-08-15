@@ -98,9 +98,12 @@ Package::WeightsProfile Package::resolve_weights(const artifact::ArtifactIdentit
 
 Package::LoadPlan Package::plan_load(artifact::Binder& binder, const EngineOptions& options,
                                      WeightsProfile weights_profile) {
+    const ResidencyProfile residency =
+        options.weight_residency == WeightResidency::FfnOffload ? ResidencyProfile::FfnOffload
+                                                                : ResidencyProfile::AllResident;
     return LoadPlan(std::make_unique<LoadPlan::Impl>(
-        weights_profile,
-        detail::bind_artifact(binder, weights_profile, qwen3_6::startup_features(options))));
+        weights_profile, detail::bind_artifact(binder, weights_profile,
+                                               qwen3_6::startup_features(options), residency)));
 }
 
 std::unique_ptr<Package::LoadedModel>

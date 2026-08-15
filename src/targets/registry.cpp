@@ -47,6 +47,13 @@ void validate_options(const EngineOptions& options) {
     default:
         throw std::invalid_argument("Engine kv_capacity mode is invalid");
     }
+    switch (options.weight_residency) {
+    case WeightResidency::AllResident:
+    case WeightResidency::FfnOffload:
+        break;
+    default:
+        throw std::invalid_argument("Engine weight_residency value is invalid");
+    }
     if (options.max_concurrency == 0 || options.max_concurrency > kMaximumConcurrency) {
         throw std::invalid_argument("Engine max_concurrency must be in [1,8]");
     }
@@ -124,6 +131,8 @@ ConstructedTarget construct_registered(const EngineOptions& options, DeviceConte
     summary.artifact_bytes_read  = stats.file_bytes;
     summary.host_to_device_bytes = stats.h2d_bytes;
     summary.peak_staging_bytes   = stats.peak_staging_bytes;
+    summary.host_bytes           = stats.host_bytes;
+    summary.host_capacity_bytes  = stats.host_capacity_bytes;
     summary.tensor_count         = stats.tensor_count;
     summary.resource_count       = stats.resource_count;
     return ConstructedTarget{.active            = ActiveTarget(std::move(instance)),
