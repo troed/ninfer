@@ -3,7 +3,7 @@
 Status: implementation in progress. Surfaces 1-5 of the change-surface table are implemented
 (see section 5): artifact host placement, tensor host addresses, the 27B residency profile, the
 staging arena/slot binding, and the graph-capture staging interleave. The public engine residency
-option, capacity planning, and CLI surface (surface 6) and the remaining tests/docs surfaces are
+option and capacity planning (surface 6) and the remaining test/documentation surfaces (7-8) are
 not yet implemented. Scope target is the Qwen3.6-27B dense identities (`groupwise-int` and
 `nvfp4`); the 35B-A3B MoE target is a bonus item with extra work.
 
@@ -87,8 +87,8 @@ tensor-level offload semantics and gives one familiar knob.
 ### 4.3 Resident staging arena
 
 A new device `DeviceArena` with fixed addresses holds the streaming slots. Slot capacity is
-`2 x largest streaming unit` (double buffering; a 1 GiB arena covers the largest ~95 MB FFN
-matrices plus the ~0.35-1 GiB MTP/draft units with headroom). Every offloaded tensor has one fixed
+`2 x largest streaming unit` (double buffering; the per-layer FFN unit is ~292 MiB groupwise /
+~306 MiB NVFP4, and the MTP/draft extras stay device-resident under FfnOffload). Every offloaded tensor has one fixed
 slot address; resident tensors keep their addresses in the existing backing arena. Kernels and
 NVFP4 TMA descriptors are re-pointed to slot addresses at startup; because slot addresses never
 change and each round re-sends the same bytes to the same addresses, captured graphs and TMA maps
@@ -96,14 +96,17 @@ stay valid across rounds.
 
 ### 4.4 Graph restructure
 
-`prepare_graphs()` keeps the per-(profile, batch) capture but interleaves H2D memcpy nodes before
-the kernel nodes of each offload group, alternating slots `g % 2`. Copy(group g) is address-
-independent of compute(group g-1), so the graph executor overlaps the copy engine with the SMs —
-the double-buffered pipeline lives inside one captured graph and the "one graph launch per round"
-property is preserved. Replay re-sends the same bytes to the same addresses, so no re-capture.
+The per-(profile, batch) capture is kept, but the interleave is constructed inside the shared 27B
+`post_mixer` leaf rather than in `prepare_graphs()`: the leaf issues a `cudaMemcpyAsync` H2D copy
+for each staged gate/up and down before its MLP kernels (gated on `weight.host != nullptr`), so
+during capture the copies become in-graph H2D memcpy nodes in front of each offload group's kernel
+nodes, and replay re-sends the same bytes to the same fixed slot addresses, so no re-capture. The
+double-buffered pipeline (`g % 2` slot alternation established at load) lives inside one captured
+graph and the "one graph launch per round" property is preserved.
 
-Prefill is not graph-captured today; it streams per group with `cudaMemcpyAsync` + events on
-`device.load_stream`. Prefill is compute-bound, so streaming is largely hidden.
+Prefill is not graph-captured today; the same leaf staging runs eagerly per group with
+`cudaMemcpyAsync` + events on `device.load_stream`. Prefill is compute-bound, so streaming is
+largely hidden.
 
 ### 4.5 Capacity planning
 
