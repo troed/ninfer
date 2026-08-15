@@ -92,9 +92,9 @@ struct Package {
     using ResidencyProfile = detail::ResidencyProfile;
     using LoadPlan         = detail::LoadPlan;
     using LoadedModel      = detail::LoadedModel;
-    using Frontend        = detail::Frontend;
-    using PreparedPrompt  = detail::PreparedPrompt;
-    using OutputSession   = detail::OutputSession;
+    using Frontend         = detail::Frontend;
+    using PreparedPrompt   = detail::PreparedPrompt;
+    using OutputSession    = detail::OutputSession;
     using SequencePlanner = qwen3_6::SequencePlanner<detail::Variant>;
     using SequencePlan    = qwen3_6::SequencePlan<detail::Variant>;
     using RequestBasePlan = qwen3_6::RequestBasePlan<detail::Variant>;
