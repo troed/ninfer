@@ -1,7 +1,11 @@
 # CPU/system-RAM weight offload design
 
-Status: investigation/design proposal. Not implemented. Scope target is the Qwen3.6-27B dense
-identities (`groupwise-int` and `nvfp4`); the 35B-A3B MoE target is a bonus item with extra work.
+Status: implementation in progress. Surfaces 1-5 of the change-surface table are implemented
+(see section 5): artifact host placement, tensor host addresses, the 27B residency profile, the
+staging arena/slot binding, and the graph-capture staging interleave. The public engine residency
+option, capacity planning, and CLI surface (surface 6) and the remaining tests/docs surfaces are
+not yet implemented. Scope target is the Qwen3.6-27B dense identities (`groupwise-int` and
+`nvfp4`); the 35B-A3B MoE target is a bonus item with extra work.
 
 ## 1. Problem
 
@@ -114,25 +118,27 @@ down via the existing planner; on 16 GB the 27B KV ceiling is reduced from the 3
 | 1 | Binder/plan | `src/artifact/binder.{h,cpp}`, `src/artifact/materializer.{h,cpp}`, `src/artifact/typed_binding.{h,cpp}` | add `TensorPlacement::Host` for weight tensors, host tensor spans in `MaterializationPlan`, host store in `MaterializedArtifact` + `host_data(handle)`, host-bytes stats |
 | 2 | Tensor type | `src/core/tensor.h` | `Tensor`/`Weight` carry an optional host address beside device `data` |
 | 3 | 27B bindings | `src/targets/qwen3_6_27b/impl/load/bindings.cpp`, `package.cpp` | residency profile; offloaded tensors bind views to the host store; resident tensors keep the arena |
-| 4 | Staging + slot binding | `src/targets/qwen3_6/impl/runtime/` (Program, `workspace_recipe.h`) | fixed staging arena; offloaded-tensor -> slot map; NVFP4 TMA maps re-pointed to slots |
-| 5 | Graph capture | `program_impl.h` `prepare_graphs()`, schedule capture helpers | interleave H2D memcpy nodes per offload group; representative capture fills slots |
+| 4 | Staging + slot binding | family `model_view.h`, `src/targets/qwen3_6_27b/impl/load/bindings.{h,cpp}` | fixed staging arena; offloaded-tensor -> slot map; NVFP4 TMA maps re-pointed to slots |
+| 5 | Graph capture | `src/targets/qwen3_6_27b/impl/variant.cpp`, `src/artifact/materializer.{h,cpp}` | interleave H2D memcpy nodes per offload group inside the shared post_mixer leaf; pinned host store |
 | 6 | Engine/sizing | `src/runtime/engine/kv_capacity.cpp`, `include/ninfer/engine.h`, `types.h`, Engine PIMPL | offload option + resident-bytes budget; load/memory summaries report host store and staging |
 | 7 | Tests | artifact binder host-placement contract tests, real-artifact load, memory_summary | new host-placement coverage |
 | 8 | Docs | `docs/cli.md`, `docs/performance.md`, model cards | option surface and measurement caveat |
 
-Status: surfaces 1-4 are implemented — binder host placement
+Status: surfaces 1-5 are implemented — binder host placement
 (`TensorPlacement::Host`, host spans in `MaterializationPlan`), materializer host store
-(`MaterializedArtifact::host_data(handle)` + host-bytes stats), `bind_tensor` host dispatch,
-`Tensor`/`Weight` host addresses with view propagation, the 27B `ResidencyProfile`
-(`AllResident` default, `FfnOffload` binds the per-layer FFN/SwiGLU gate/up + down matrices
-host-only), and the fixed staging arena with offloaded-tensor -> slot binding: a
+(`MaterializedArtifact::host_data(handle)` + host-bytes stats, pinned via `cudaMallocHost`),
+`bind_tensor` host dispatch, `Tensor`/`Weight` host addresses with view propagation, the 27B
+`ResidencyProfile` (`AllResident` default, `FfnOffload` binds the per-layer FFN/SwiGLU gate/up +
+down matrices host-only), the fixed staging arena with offloaded-tensor -> slot binding (a
 `2 x largest-streaming-unit` device `DeviceArena` whose slot addresses never change, the
 host-placed `Weight` device planes (`payload`/`qdata`/`qhigh`/`scales`, and by extension the
-NVFP4 TMA maps) re-pointed at those slots during `LoadedModelData` construction before
-graph capture, and a `ModelView::staged_weights` slot map (`host_source`, `slot`, `bytes`)
-for the graph-capture interleave. The host store is plain host memory; pinning
-(`cudaHostRegister`) is deferred to the staging-copy phase (surface 5). Surface 4 does not
-yet run decode: the graph interleave of H2D memcpy nodes is surface 5.
+NVFP4 TMA maps) re-pointed at those slots during `LoadedModelData` construction before graph
+capture, and a `ModelView::staged_weights` slot map), and the graph-capture staging interleave:
+the shared 27B `post_mixer` leaf issues a `cudaMemcpyAsync` host->slot copy for each staged
+gate/up and down before its MLP kernels, gated on `weight.host != nullptr`, so the copies become
+in-graph H2D memcpy nodes during capture and run eagerly for prefill and non-graph decode.
+FfnOffload decode now runs correctly; the residency profile is still not selectable through the
+public engine option (surface 6).
 
 Unchanged: KV cache, workspace, RequestMemory, scheduler round logic, kernels, media/frontend
 paths.

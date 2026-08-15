@@ -1,6 +1,6 @@
 # Qwen3.6-27B staging interleave (surface 5) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make FfnOffload decode actually run by interleaving H2D staging copies of the offloaded FFN weight planes into the decode/prefill path, so the host-resident `Weight` objects land in their fixed staging slots before the MLP kernels that consume them.
 
@@ -38,7 +38,7 @@
 - Modify: `tests/targets/qwen3_6_27b/test_residency.cpp`
 - Test: same file (the existing `ninfer_qwen3_6_27b_residency_test` target)
 
-- [ ] **Step 1: Add includes**
+- [x] **Step 1: Add includes**
 
 Edit `tests/targets/qwen3_6_27b/test_residency.cpp` (current lines 1-17):
 
@@ -67,7 +67,7 @@ Edit `tests/targets/qwen3_6_27b/test_residency.cpp` (current lines 1-17):
 #include <vector>
 ```
 
-- [ ] **Step 2: Add the round helper**
+- [x] **Step 2: Add the round helper**
 
 Insert this function in the anonymous namespace immediately after `is_host_placed` (currently ends at line 38):
 
@@ -97,7 +97,7 @@ int staged_mlp_round_matches_host(const ninfer::DeviceContext& device, WeightsPr
 
 Notes: `DensePostMixerPayload`, `TextConfig`, `Variant`, `WeightsProfile` all resolve via the existing `using namespace ninfer::targets::qwen3_6_27b::detail;`. `CUDA_CHECK` is available transitively through `artifact/materializer.h` → `core/device.h`. The eager `post_mixer` round stages weights (after Task 2) and runs the real `linear_swiglu`/`linear_add` kernels on this GPU; before Task 2 the slots hold uninitialized `cudaMalloc` data, so the `memcmp` fails.
 
-- [ ] **Step 3: Call the helper in `verify_residency`**
+- [x] **Step 3: Call the helper in `verify_residency`**
 
 Insert between the vocabulary-endpoint check (currently lines 165-170) and the existing `return 0;` (line 171):
 
@@ -111,7 +111,7 @@ Insert between the vocabulary-endpoint check (currently lines 165-170) and the e
     return 0;
 ```
 
-- [ ] **Step 4: Build and run to verify RED**
+- [x] **Step 4: Build and run to verify RED**
 
 Run: `cmake --build build --target ninfer_qwen3_6_27b_residency_test`
 Expected: compiles cleanly.
@@ -119,7 +119,7 @@ Expected: compiles cleanly.
 Run: `NINFER_QWEN3_8_27B_WEIGHTS=$HOME/llm-models/qwen3_8_27b.ninfer /usr/bin/ctest --test-dir build --output-on-failure -R ninfer_qwen3_6_27b_residency_test`
 Expected: FAIL with `a staged MLP slot does not reproduce its host payload` (exit 1) — the staging slots hold uninitialized memory because `post_mixer` does not copy yet. This is the genuine RED.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/targets/qwen3_6_27b/test_residency.cpp
@@ -134,7 +134,7 @@ git commit -m "test(targets): add staged MLP round scenarios"
 - Modify: `src/targets/qwen3_6_27b/impl/variant.cpp`
 - Test: `ninfer_qwen3_6_27b_residency_test`
 
-- [ ] **Step 1: Add the `core/device.h` include**
+- [x] **Step 1: Add the `core/device.h` include**
 
 In `src/targets/qwen3_6_27b/impl/variant.cpp`, after `#include "targets/qwen3_6_27b/impl/variant.h"` (line 1), add:
 
@@ -142,7 +142,7 @@ In `src/targets/qwen3_6_27b/impl/variant.cpp`, after `#include "targets/qwen3_6_
 #include "core/device.h"
 ```
 
-- [ ] **Step 2: Add the `stage_weight` helper**
+- [x] **Step 2: Add the `stage_weight` helper**
 
 In the anonymous namespace, immediately after `text_policy` (currently ends at line 50), add:
 
@@ -157,7 +157,7 @@ void stage_weight(const Weight& weight, cudaStream_t stream) {
 
 `Weight` resolves as in the existing `text_policy` signature (`const Weight&`). `payload` is `const void*` (the slot address, `const_cast`ed at the single population site in surface 4); the host pointer is the pinned host-store object base.
 
-- [ ] **Step 3: Call `stage_weight` at the top of `post_mixer`**
+- [x] **Step 3: Call `stage_weight` at the top of `post_mixer`**
 
 Replace the body of `Variant::post_mixer` (currently `variant.cpp:237-245`):
 
@@ -177,7 +177,7 @@ void Variant::post_mixer(const Tensor& hidden, const PostMixerWeights& weights, 
 
 Do NOT touch `mtp_post_mixer` (MTP weights stay device-resident under FfnOffload; `mtp_post_mixer` is only called when the MTP feature is active, and no MTP weights are staged).
 
-- [ ] **Step 4: Build and run to verify GREEN**
+- [x] **Step 4: Build and run to verify GREEN**
 
 Run: `cmake --build build`
 Expected: full tree compiles clean (both 27B and 35B-A3B variants compile against unchanged headers).
@@ -188,7 +188,7 @@ Expected: PASS — the eager `post_mixer` round now stages both planes, and the 
 Run: `/usr/bin/ctest --test-dir build --output-on-failure -R 'ninfer_artifact_|ninfer_arena_test|ninfer_tensor_test|ninfer_qwen3_6_27b_residency_test'`
 Expected: 5/5 PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/targets/qwen3_6_27b/impl/variant.cpp
@@ -203,7 +203,7 @@ git commit -m "feat(targets): stage offloaded FFN weights before MLP kernels"
 - Modify: `src/artifact/materializer.h`, `src/artifact/materializer.cpp`
 - Test: `tests/test_artifact_materialization.cpp`
 
-- [ ] **Step 1: RED — add a pinning assertion to the artifact materialization test**
+- [x] **Step 1: RED — add a pinning assertion to the artifact materialization test**
 
 In `tests/test_artifact_materialization.cpp`, immediately after the host-stats `require` (currently lines 233-235), add:
 
@@ -220,7 +220,7 @@ Expected: compiles. Then:
 Run: `/usr/bin/ctest --test-dir build --output-on-failure -R ninfer_artifact_materialization_test`
 Expected: FAIL — `cudaPointerGetAttributes` on the current plain `std::make_unique<std::byte[]>` store returns `cudaErrorInvalidValue`, `CUDA_CHECK` throws, and the test exits 1. This is the RED for Task 3.
 
-- [ ] **Step 2: Add the deleter to `materializer.h`**
+- [x] **Step 2: Add the deleter to `materializer.h`**
 
 In `src/artifact/materializer.h`, in namespace `ninfer::artifact` immediately before `class MaterializedArtifact` (line 34), add:
 
@@ -248,7 +248,7 @@ to:
 
 The defaulted move ctor/assign still work: a `unique_ptr` with a stateless deleter is move-constructible and the deleter travels with it.
 
-- [ ] **Step 3: Allocate the store with `cudaMallocHost` in `materializer.cpp`**
+- [x] **Step 3: Allocate the store with `cudaMallocHost` in `materializer.cpp`**
 
 In `src/artifact/materializer.cpp`, in the `if (plan.host_capacity_bytes > 0)` block, replace the allocation (currently lines 156-162):
 
@@ -281,7 +281,7 @@ with:
 
 NOTE (implementer deviation, verified at execution): `cudaMallocHost` packs allocations at 512-byte granularity, not 4096, so a host-store request of `store_bytes + pad` (e.g. 271 bytes in the 16-byte host-fixture test) shifted the subsequent `Slot` pinned buffers off 4096-byte alignment, breaking `read_direct`'s `direct_io_alignment` contract (`reader.cpp:230` throws "direct artifact read is not 4096-byte aligned"). The committed code therefore rounds the request up to `Reader::direct_io_alignment` (4096) via `align_up` so the host-store footprint is a 4096-multiple and subsequent pinned allocations land on 4096 boundaries:
 
-- [ ] **Step 4: Build and run to verify GREEN**
+- [x] **Step 4: Build and run to verify GREEN**
 
 Run: `cmake --build build`
 Expected: full tree compiles clean.
@@ -292,7 +292,7 @@ Expected: 4/4 PASS (reader, materialization, tensor, arena).
 Run: `NINFER_QWEN3_8_27B_WEIGHTS=$HOME/llm-models/qwen3_8_27b.ninfer /usr/bin/ctest --test-dir build --output-on-failure -R ninfer_qwen3_6_27b_residency_test`
 Expected: PASS — the residency test exercises the pinned host store end-to-end (host source = pinned store; staging copy now a true async DMA from pinned memory).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/artifact/materializer.h src/artifact/materializer.cpp tests/test_artifact_materialization.cpp
@@ -307,7 +307,7 @@ git commit -m "feat(artifact): pin the host store for staged weight copies"
 - Modify: `docs/maintainer/weight-offload.md`
 - Modify: `docs/superpowers/plans/2026-08-15-qwen3_6-27b-staging-interleave.md`
 
-- [ ] **Step 1: Update the top-of-file Status line**
+- [x] **Step 1: Update the top-of-file Status line**
 
 Replace `docs/maintainer/weight-offload.md` lines 3-4:
 
@@ -327,13 +327,13 @@ not yet implemented. Scope target is the Qwen3.6-27B dense identities (`groupwis
 `nvfp4`); the 35B-A3B MoE target is a bonus item with extra work.
 ```
 
-- [ ] **Step 2: Correct the change-surface table file columns**
+- [x] **Step 2: Correct the change-surface table file columns**
 
 In `docs/maintainer/weight-offload.md`:
 - Row 4 (`Staging + slot binding`) — replace the Files column `src/targets/qwen3_6/impl/runtime/` (Program, `workspace_recipe.h`) with `` family `model_view.h`, `src/targets/qwen3_6_27b/impl/load/bindings.{h,cpp}` ``.
 - Row 5 (`Graph capture`) — replace the Files column `` `program_impl.h` `prepare_graphs()`, schedule capture helpers `` with `` `src/targets/qwen3_6_27b/impl/variant.cpp`, `src/artifact/materializer.{h,cpp}` `` and change the Change column to `interleave H2D memcpy nodes per offload group inside the shared post_mixer leaf; pinned host store`.
 
-- [ ] **Step 3: Replace the section-5 Status paragraph**
+- [x] **Step 3: Replace the section-5 Status paragraph**
 
 Replace the entire Status paragraph (currently lines 123-135) with:
 
@@ -355,11 +355,11 @@ FfnOffload decode now runs correctly; the residency profile is still not selecta
 public engine option (surface 6).
 ```
 
-- [ ] **Step 4: Mark this plan's checkboxes**
+- [x] **Step 4: Mark this plan's checkboxes**
 
-Change every `- [ ]` in this file to `- [x]`.
+Change every `- [x]` in this file to `- [x]`.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `git diff --check`
 Expected: clean.
