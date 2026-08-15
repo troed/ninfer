@@ -120,6 +120,12 @@ down via the existing planner; on 16 GB the 27B KV ceiling is reduced from the 3
 | 7 | Tests | artifact binder host-placement contract tests, real-artifact load, memory_summary | new host-placement coverage |
 | 8 | Docs | `docs/cli.md`, `docs/performance.md`, model cards | option surface and measurement caveat |
 
+Status: surface 1 is implemented as the first slice — binder host placement
+(`TensorPlacement::Host`, host spans in `MaterializationPlan`), materializer host store
+(`MaterializedArtifact::host_data(handle)` + host-bytes stats), and `bind_tensor` host dispatch.
+The host store is plain host memory; pinning (`cudaHostRegister`) is deferred to the staging-arena
+phase (surface 4).
+
 Unchanged: KV cache, workspace, RequestMemory, scheduler round logic, kernels, media/frontend
 paths.
 
