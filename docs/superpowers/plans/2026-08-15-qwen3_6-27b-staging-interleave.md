@@ -78,10 +78,10 @@ int staged_mlp_round_matches_host(const ninfer::DeviceContext& device, WeightsPr
     const ninfer::Tensor hidden = io.alloc(ninfer::DType::BF16, {TextConfig::hidden, 1});
     ninfer::Tensor residual     = io.alloc(ninfer::DType::BF16, {TextConfig::hidden, 1});
     ninfer::WorkspaceArena work(Variant::post_mixer_workspace_capacity_bytes(
-        profile, qwen3_6::TextPhase::Verify, 1, 1));
+        profile, ninfer::targets::qwen3_6::TextPhase::Verify, 1, 1));
     work.reset();
-    Variant::post_mixer(hidden, post_mixer, residual, qwen3_6::TextPhase::Verify, work,
-                        device.stream);
+    Variant::post_mixer(hidden, post_mixer, residual, ninfer::targets::qwen3_6::TextPhase::Verify,
+                        work, device.stream);
     CUDA_CHECK(cudaStreamSynchronize(device.stream));
     for (const ninfer::Weight& weight : {post_mixer.gate_up, post_mixer.down}) {
         std::vector<std::byte> slot(static_cast<std::size_t>(weight.payload_bytes));
