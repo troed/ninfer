@@ -67,6 +67,43 @@ void require_positive_finite(std::uint32_t bits, std::string_view label) {
     }
 }
 
+std::uint64_t align_up_256(std::uint64_t value) {
+    if (value > std::numeric_limits<std::uint64_t>::max() - 255U) {
+        throw std::overflow_error("staging slot size overflows u64");
+    }
+    return (value + 255U) & ~std::uint64_t{255};
+}
+
+std::uint64_t encoded_bytes(const WeightPlan& plan, std::int32_t rows, std::int32_t columns) {
+    const std::array<std::uint64_t, 2> shape = {static_cast<std::uint64_t>(rows),
+                                                static_cast<std::uint64_t>(columns)};
+    if (plan.format == NumericFormat::NVFP4) {
+        return artifact::block_scale_geometry(NumericFormat::NVFP4, shape).encoded_bytes;
+    }
+    return artifact::row_split_geometry(plan.format, shape).encoded_bytes;
+}
+
+// Re-point a host-placed weight's device planes at a fixed slot address. host is
+// preserved: it remains the object-granularity copy source for staging.
+void point_at_slot(Weight& weight, const void* slot, NumericFormat format, std::int32_t rows,
+                   std::int32_t columns) {
+    const std::array<std::uint64_t, 2> shape = {static_cast<std::uint64_t>(rows),
+                                                static_cast<std::uint64_t>(columns)};
+    const auto* base                        = static_cast<const std::byte*>(slot);
+    weight.payload                          = base;
+    weight.qdata                            = base;
+    if (format == NumericFormat::NVFP4) {
+        const artifact::BlockScaleGeometry geometry =
+            artifact::block_scale_geometry(NumericFormat::NVFP4, shape);
+        weight.qhigh  = nullptr;
+        weight.scales = base + geometry.scale_plane_offset;
+    } else {
+        const artifact::RowSplitGeometry geometry = artifact::row_split_geometry(format, shape);
+        weight.qhigh  = geometry.high_plane_bytes == 0 ? nullptr : base + geometry.high_plane_offset;
+        weight.scales = base + geometry.scale_plane_offset;
+    }
+}
+
 WeightPlan bind_weight(artifact::Binder& binder, std::string_view name, NumericFormat format,
                        std::initializer_list<std::uint64_t> shape,
                        artifact::TensorPlacement placement) {
@@ -451,6 +488,20 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
 
     runtime.weights_arena = &backing.device_arena();
     runtime.features      = plan.features;
+
+    const bool offload =
+        backing.host_data_or_null(plan.text_layers[0].mlp.gate_up.object) != nullptr;
+    std::uint64_t staging_unit_bytes = 0;
+    if (offload) {
+        const std::uint64_t gate_bytes =
+            align_up_256(encoded_bytes(plan.text_layers[0].mlp.gate_up, 34816, 5120));
+        const std::uint64_t down_bytes =
+            align_up_256(encoded_bytes(plan.text_layers[0].mlp.down, 5120, 17408));
+        staging_unit_bytes = gate_bytes + down_bytes;
+        staging_arena_.emplace(2 * staging_unit_bytes);
+        runtime.staging_arena = &*staging_arena_;
+    }
+
     auto& token_embedding = runtime.token_embedding;
     auto& full_layers     = runtime.full_layers;
     auto& gdn_layers      = runtime.gdn_layers;
@@ -460,6 +511,23 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
     token_embedding        = materialized_weight(backing, plan.token_embedding, 248320, 5120);
     std::size_t full_index = 0;
     std::size_t gdn_index  = 0;
+    const auto stage_mlp = [&](DensePostMixerPayload& post_mixer, const MlpPlan& mlp,
+                               std::size_t layer) {
+        if (!offload) { return; }
+        const auto* arena_base = static_cast<const std::byte*>(runtime.staging_arena->base());
+        const auto* buffer =
+            arena_base + static_cast<std::size_t>(layer % 2) * staging_unit_bytes;
+        const std::uint64_t gate_bytes = align_up_256(encoded_bytes(mlp.gate_up, 34816, 5120));
+        point_at_slot(post_mixer.gate_up, buffer, mlp.gate_up.format, 34816, 5120);
+        point_at_slot(post_mixer.down, buffer + gate_bytes, mlp.down.format, 5120, 17408);
+        runtime.staged_weights.push_back(
+            {backing.host_data(mlp.gate_up.object),
+             const_cast<void*>(post_mixer.gate_up.payload),
+             static_cast<std::size_t>(post_mixer.gate_up.payload_bytes)});
+        runtime.staged_weights.push_back(
+            {backing.host_data(mlp.down.object), const_cast<void*>(post_mixer.down.payload),
+             static_cast<std::size_t>(post_mixer.down.payload_bytes)});
+    };
     for (std::size_t layer = 0; layer < kTextLayers; ++layer) {
         const TextLayerPlan& source = plan.text_layers[layer];
         if (source.is_full_attention) {
@@ -475,6 +543,7 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
             target.post_attention_norm = artifact::materialized_tensor(
                 backing, source.post_attention_norm, NumericFormat::BF16, {5120});
             target.post_mixer = load_mlp(source.mlp, backing);
+            stage_mlp(target.post_mixer, source.mlp, layer);
         } else {
             GdnWeights& target = gdn_layers.at(gdn_index++);
             target.input_norm  = artifact::materialized_tensor(backing, source.input_norm,
@@ -496,6 +565,7 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
             target.post_attention_norm = artifact::materialized_tensor(
                 backing, source.post_attention_norm, NumericFormat::BF16, {5120});
             target.post_mixer = load_mlp(source.mlp, backing);
+            stage_mlp(target.post_mixer, source.mlp, layer);
         }
     }
     if (full_index != full_layers.size() || gdn_index != gdn_layers.size()) {

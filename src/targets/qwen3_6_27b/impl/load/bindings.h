@@ -8,11 +8,13 @@
 
 #include "artifact/binder.h"
 #include "artifact/materializer.h"
+#include "core/arena.h"
 #include "core/tensor.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <variant>
 
@@ -186,6 +188,9 @@ public:
     artifact::MaterializedArtifact backing;
     qwen3_6::FrontendResources frontend;
     RuntimeModelView runtime;
+
+private:
+    std::optional<DeviceArena> staging_arena_;
 };
 
 class LoadedModel::Impl {
