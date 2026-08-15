@@ -83,6 +83,7 @@ struct EngineOptions {
     std::uint32_t prefill_chunk        = 1024;
     KvCacheStorage kv_cache            = KvCacheStorage::BFloat16;
     WeightResidency weight_residency   = WeightResidency::AllResident;
+    std::uint32_t resident_ffn_layers  = 0;
     SpeculativeOptions speculative;
     bool enable_vision  = false;
     bool use_cuda_graph = true;

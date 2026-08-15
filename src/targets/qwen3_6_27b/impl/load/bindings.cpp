@@ -43,9 +43,11 @@ NumericFormat endpoint_format(WeightsProfile weights_profile) {
     throw std::invalid_argument("qwen3_6_27b: invalid weights profile");
 }
 
-artifact::TensorPlacement ffn_placement(ResidencyProfile residency) noexcept {
-    return residency == ResidencyProfile::FfnOffload ? artifact::TensorPlacement::Host
-                                                     : artifact::TensorPlacement::Device;
+artifact::TensorPlacement ffn_placement(ResidencyProfile residency, std::uint32_t resident_layers,
+                                        std::size_t layer) noexcept {
+    if (residency != ResidencyProfile::FfnOffload) { return artifact::TensorPlacement::Device; }
+    return layer < resident_layers ? artifact::TensorPlacement::Device
+                                   : artifact::TensorPlacement::Host;
 }
 
 std::uint32_t read_u32_le(std::span<const std::byte> bytes, std::uint64_t offset,
@@ -247,7 +249,7 @@ load_gdn_input_projection(const GdnPlan& plan, const artifact::MaterializedArtif
 }
 
 void bind_groupwise_text_layers(artifact::Binder& binder, BindingPlan& out,
-                                ResidencyProfile residency) {
+                                ResidencyProfile residency, std::uint32_t resident_ffn_layers) {
     for (std::size_t layer = 0; layer < kTextLayers; ++layer) {
         TextLayerPlan& target    = out.text_layers[layer];
         const std::string prefix = "text/layers/" + std::to_string(layer) + "/";
@@ -298,15 +300,15 @@ void bind_groupwise_text_layers(artifact::Binder& binder, BindingPlan& out,
             binder, prefix + "post_attention_norm", NumericFormat::BF16, {5120});
         target.mlp.gate_up =
             bind_weight(binder, prefix + "mlp/gate_up", NumericFormat::Q4G64_F16S, {34816, 5120},
-                        ffn_placement(residency));
+                        ffn_placement(residency, resident_ffn_layers, layer));
         target.mlp.down =
             bind_weight(binder, prefix + "mlp/down", NumericFormat::Q5G64_F16S, {5120, 17408},
-                        ffn_placement(residency));
+                        ffn_placement(residency, resident_ffn_layers, layer));
     }
 }
 
 void bind_nvfp4_text_layers(artifact::Binder& binder, BindingPlan& out,
-                            ResidencyProfile residency) {
+                            ResidencyProfile residency, std::uint32_t resident_ffn_layers) {
     for (std::size_t layer = 0; layer < kTextLayers; ++layer) {
         TextLayerPlan& target    = out.text_layers[layer];
         const std::string prefix = "text/layers/" + std::to_string(layer) + "/";
@@ -376,10 +378,10 @@ void bind_nvfp4_text_layers(artifact::Binder& binder, BindingPlan& out,
         target.mlp.gate_up =
             bind_nvfp4_weight(binder, prefix + "mlp/gate_up", 34816, 5120,
                               prefix + "mlp/gate_up_projection/input_scale_divisor",
-                              ffn_placement(residency));
+                              ffn_placement(residency, resident_ffn_layers, layer));
         target.mlp.down = bind_nvfp4_weight(binder, prefix + "mlp/down", 5120, 17408,
                                             prefix + "mlp/down_projection/input_scale_divisor",
-                                            ffn_placement(residency));
+                                            ffn_placement(residency, resident_ffn_layers, layer));
     }
 }
 
@@ -405,7 +407,11 @@ void validate_draft_ids(const artifact::Binder& binder, artifact::ObjectHandle h
 } // namespace
 
 ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_profile,
-                               qwen3_6::StartupFeatures features, ResidencyProfile residency) {
+                               qwen3_6::StartupFeatures features, ResidencyProfile residency,
+                               std::uint32_t resident_ffn_layers) {
+    if (resident_ffn_layers > kTextLayers) {
+        throw std::invalid_argument("resident_ffn_layers must be in [0,64]");
+    }
     ArtifactLoadPlan load_plan;
     BindingPlan& out = load_plan.bindings;
     out.frontend     = qwen3_6::bind_frontend_resources(binder);
@@ -418,10 +424,10 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_
     switch (weights_profile) {
     case WeightsProfile::GroupwiseInt:
     case WeightsProfile::GroupwiseIntW8Endpoints:
-        bind_groupwise_text_layers(binder, out, residency);
+        bind_groupwise_text_layers(binder, out, residency, resident_ffn_layers);
         break;
     case WeightsProfile::Nvfp4:
-        bind_nvfp4_text_layers(binder, out, residency);
+        bind_nvfp4_text_layers(binder, out, residency, resident_ffn_layers);
         break;
     default:
         throw std::invalid_argument("qwen3_6_27b: invalid weights profile");
@@ -490,7 +496,9 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
     runtime.features      = plan.features;
 
     const bool offload =
-        backing.host_data_or_null(plan.text_layers[0].mlp.gate_up.object) != nullptr;
+        std::any_of(plan.text_layers.begin(), plan.text_layers.end(), [&](const TextLayerPlan& layer) {
+            return backing.host_data_or_null(layer.mlp.gate_up.object) != nullptr;
+        });
     std::uint64_t staging_unit_bytes = 0;
     if (offload) {
         const std::uint64_t gate_bytes =
@@ -515,6 +523,7 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
     const auto stage_mlp = [&](DensePostMixerPayload& post_mixer, const MlpPlan& mlp,
                                std::size_t layer) {
         if (!offload) { return; }
+        if (post_mixer.gate_up.host == nullptr) { return; }
         const auto* arena_base = static_cast<const std::byte*>(runtime.staging_arena->base());
         const auto* buffer =
             arena_base + static_cast<std::size_t>(layer % 2) * staging_unit_bytes;

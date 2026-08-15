@@ -121,7 +121,8 @@ struct ArtifactLoadPlan {
 
 ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_profile,
                                qwen3_6::StartupFeatures features,
-                               ResidencyProfile residency = ResidencyProfile::AllResident);
+                               ResidencyProfile residency = ResidencyProfile::AllResident,
+                               std::uint32_t resident_ffn_layers = 0);
 
 struct DensePostMixerPayload {
     Weight gate_up;

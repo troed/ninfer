@@ -103,7 +103,8 @@ Package::LoadPlan Package::plan_load(artifact::Binder& binder, const EngineOptio
                                                                 : ResidencyProfile::AllResident;
     return LoadPlan(std::make_unique<LoadPlan::Impl>(
         weights_profile, detail::bind_artifact(binder, weights_profile,
-                                               qwen3_6::startup_features(options), residency)));
+                                               qwen3_6::startup_features(options), residency,
+                                               options.resident_ffn_layers)));
 }
 
 std::unique_ptr<Package::LoadedModel>
