@@ -336,13 +336,16 @@ Then, before the layer loop (`for (std::size_t layer = 0; layer < kTextLayers; +
         point_at_slot(post_mixer.gate_up, buffer, mlp.gate_up.format, 34816, 5120);
         point_at_slot(post_mixer.down, buffer + gate_bytes, mlp.down.format, 5120, 17408);
         runtime.staged_weights.push_back(
-            {backing.host_data(mlp.gate_up.object), post_mixer.gate_up.payload,
+            {backing.host_data(mlp.gate_up.object),
+             const_cast<void*>(post_mixer.gate_up.payload),
              static_cast<std::size_t>(post_mixer.gate_up.payload_bytes)});
         runtime.staged_weights.push_back(
-            {backing.host_data(mlp.down.object), post_mixer.down.payload,
+            {backing.host_data(mlp.down.object), const_cast<void*>(post_mixer.down.payload),
              static_cast<std::size_t>(post_mixer.down.payload_bytes)});
     };
 ```
+
+Note: `StagedWeight::slot` is `void*` (the surface-5 memcpy destination), but `Weight::payload` is `const void*`; the `const_cast<void*>` at this population site is the single, deliberate const boundary (confirmed by the Task-2 code-quality review).
 
 Then update BOTH post_mixer assignment sites to call the lambda. In the full-attention branch, change `:477`:
 
@@ -446,6 +449,6 @@ git commit -m "docs(offload): mark the 27B staging arena and slot binding as imp
 ## Follow-on requirements this plan records (for the surface-5 plan)
 
 1. **Slot map consumption**: surface 5's `prepare_graphs()` interleave reads `ModelView::staged_weights` (and `ModelView::staging_arena`) to emit H2D `cudaMemcpyAsync` graph nodes from `host_source` → `slot` before each offload group's kernels, alternating buffers `g % 2`. Copy for group `g` is address-independent of compute for group `g-1` (different buffer), enabling overlap inside one graph.
-2. **Object-granularity invariant**: `staged_weights[i].host_source` is always `MaterializedArtifact::host_data(handle)` (the object base), never a derived view's `host`; this test pins that invariant.
+2. **Object-granularity invariant**: `staged_weights[i].host_source` is always `MaterializedArtifact::host_data(handle)` (the object base), never a derived view's `host`; this test pins that invariant. `staged_weights[i].slot` is the const_cast'ed device address from the weight's re-pointed `payload`.
 3. **Surface 4 does not run decode yet.** `FfnOffload` is not reachable via `Package::plan_load` (default `AllResident`), and nothing consumes `staged_weights` until surface 5. The residency test verifies addresses only.
 4. **35B-A3B** is untouched: its `ModelView` instantiation keeps the new members default (null/empty).
