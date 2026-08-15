@@ -202,6 +202,119 @@ int verify_residency(const std::filesystem::path& path, WeightsProfile profile) 
     return 0;
 }
 
+int verify_partial_residency(const std::filesystem::path& path, WeightsProfile profile) {
+    constexpr std::size_t kResident = 41;
+    constexpr std::size_t kStreamed = kTextLayers - kResident;
+
+    ninfer::artifact::Reader reader(path);
+    ninfer::artifact::Binder binder(reader);
+    ArtifactLoadPlan plan =
+        bind_artifact(binder, profile, {}, ResidencyProfile::FfnOffload, kResident);
+    if (plan.materialization.host_tensor_objects.size() != 2 * kStreamed) {
+        std::cerr << "partial residency host tensor count mismatch: got "
+                  << plan.materialization.host_tensor_objects.size() << " expected "
+                  << 2 * kStreamed << '\n';
+        return 1;
+    }
+    for (std::size_t layer = 0; layer < kTextLayers; ++layer) {
+        const TextLayerPlan& text = plan.bindings.text_layers[layer];
+        const bool resident       = layer < kResident;
+        if (is_host_placed(plan.materialization, text.mlp.gate_up.object) == resident ||
+            is_host_placed(plan.materialization, text.mlp.down.object) == resident) {
+            std::cerr << "a partial-residency MLP weight has the wrong placement\n";
+            return 1;
+        }
+    }
+
+    ninfer::DeviceContext device(0);
+    auto materialized =
+        ninfer::artifact::materialize(reader, plan.materialization, device, nullptr);
+    std::array<std::pair<ninfer::artifact::ObjectHandle, ninfer::artifact::ObjectHandle>,
+               kStreamed>
+        streamed_handles;
+    for (std::size_t layer = kResident; layer < kTextLayers; ++layer) {
+        streamed_handles[layer - kResident] = {
+            plan.bindings.text_layers[layer].mlp.gate_up.object,
+            plan.bindings.text_layers[layer].mlp.down.object};
+    }
+    LoadedModelData data(std::move(plan.bindings), std::move(materialized));
+    if (data.runtime.staging_arena == nullptr) {
+        std::cerr << "partial residency did not allocate a staging arena\n";
+        return 1;
+    }
+    if (data.runtime.staged_weights.size() != 2 * kStreamed) {
+        std::cerr << "partial slot map size mismatch: got " << data.runtime.staged_weights.size()
+                  << " expected " << 2 * kStreamed << '\n';
+        return 1;
+    }
+    const auto* arena_begin = static_cast<const std::uint8_t*>(data.runtime.staging_arena->base());
+    const std::uintptr_t arena_lo = reinterpret_cast<std::uintptr_t>(arena_begin);
+    const std::uintptr_t arena_hi = arena_lo + data.runtime.staging_arena->capacity();
+    const std::size_t unit_bytes  = data.runtime.staging_arena->capacity() / 2;
+    for (std::size_t layer = kResident; layer < kTextLayers; ++layer) {
+        const auto& gate_up = data.runtime.staged_weights[2 * (layer - kResident)];
+        const auto& down    = data.runtime.staged_weights[2 * (layer - kResident) + 1];
+        if (gate_up.host_source !=
+                data.backing.host_data(streamed_handles[layer - kResident].first) ||
+            down.host_source != data.backing.host_data(streamed_handles[layer - kResident].second)) {
+            std::cerr << "a partial slot map entry does not source from the host store object\n";
+            return 1;
+        }
+        const std::uintptr_t expected_gate =
+            arena_lo + static_cast<std::uintptr_t>((layer % 2) * unit_bytes);
+        const std::uintptr_t expected_down =
+            expected_gate + ((gate_up.bytes + 255U) & ~std::uint64_t{255});
+        if (reinterpret_cast<std::uintptr_t>(gate_up.slot) != expected_gate ||
+            reinterpret_cast<std::uintptr_t>(down.slot) != expected_down) {
+            std::cerr << "a partial slot address does not follow the double-buffer layer layout\n";
+            return 1;
+        }
+    }
+
+    std::size_t full_index = 0;
+    std::size_t gdn_index  = 0;
+    for (std::size_t layer = 0; layer < kTextLayers; ++layer) {
+        const bool resident = layer < kResident;
+        const DensePostMixerPayload* post_mixer = nullptr;
+        if (plan.bindings.text_layers[layer].is_full_attention) {
+            post_mixer = &data.runtime.full_layers.at(full_index++).post_mixer;
+        } else {
+            post_mixer = &data.runtime.gdn_layers.at(gdn_index++).post_mixer;
+        }
+        if (resident) {
+            if (post_mixer->gate_up.host != nullptr || post_mixer->gate_up.payload == nullptr ||
+                post_mixer->down.host != nullptr || post_mixer->down.payload == nullptr) {
+                std::cerr << "a resident MLP weight does not carry device-only addresses\n";
+                return 1;
+            }
+        } else {
+            if (post_mixer->gate_up.host == nullptr || post_mixer->gate_up.payload == nullptr ||
+                post_mixer->down.host == nullptr || post_mixer->down.payload == nullptr) {
+                std::cerr << "a streamed MLP weight does not carry host and slot addresses\n";
+                return 1;
+            }
+            const std::uintptr_t gu =
+                reinterpret_cast<std::uintptr_t>(post_mixer->gate_up.payload);
+            const std::uintptr_t dn =
+                reinterpret_cast<std::uintptr_t>(post_mixer->down.payload);
+            if (gu < arena_lo || gu >= arena_hi || dn < arena_lo || dn >= arena_hi) {
+                std::cerr << "a streamed MLP weight does not point into the staging arena\n";
+                return 1;
+            }
+        }
+    }
+    if (full_index != data.runtime.full_layers.size() ||
+        gdn_index != data.runtime.gdn_layers.size()) {
+        std::cerr << "partial residency layer mapping is incomplete\n";
+        return 1;
+    }
+    if (staged_mlp_round_matches_host(device, profile,
+                                      data.runtime.full_layers.back().post_mixer) != 0) {
+        return 1;
+    }
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -217,15 +330,18 @@ int main() {
         return 77;
     }
     if (std::filesystem::is_regular_file(groupwise) &&
-        verify_residency(groupwise, WeightsProfile::GroupwiseIntW8Endpoints) != 0) {
+        (verify_residency(groupwise, WeightsProfile::GroupwiseIntW8Endpoints) != 0 ||
+         verify_partial_residency(groupwise, WeightsProfile::GroupwiseIntW8Endpoints) != 0)) {
         return 1;
     }
     if (std::filesystem::is_regular_file(legacy) &&
-        verify_residency(legacy, WeightsProfile::GroupwiseInt) != 0) {
+        (verify_residency(legacy, WeightsProfile::GroupwiseInt) != 0 ||
+         verify_partial_residency(legacy, WeightsProfile::GroupwiseInt) != 0)) {
         return 1;
     }
     if (std::filesystem::is_regular_file(nvfp4) &&
-        verify_residency(nvfp4, WeightsProfile::Nvfp4) != 0) {
+        (verify_residency(nvfp4, WeightsProfile::Nvfp4) != 0 ||
+         verify_partial_residency(nvfp4, WeightsProfile::Nvfp4) != 0)) {
         return 1;
     }
     return 0;
