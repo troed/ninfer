@@ -196,7 +196,8 @@ load_gdn_input_projection(const GdnPlan& plan, const artifact::MaterializedArtif
     };
 }
 
-void bind_groupwise_text_layers(artifact::Binder& binder, BindingPlan& out) {
+void bind_groupwise_text_layers(artifact::Binder& binder, BindingPlan& out,
+                                ResidencyProfile residency) {
     for (std::size_t layer = 0; layer < kTextLayers; ++layer) {
         TextLayerPlan& target    = out.text_layers[layer];
         const std::string prefix = "text/layers/" + std::to_string(layer) + "/";
@@ -247,7 +248,8 @@ void bind_groupwise_text_layers(artifact::Binder& binder, BindingPlan& out) {
     }
 }
 
-void bind_nvfp4_text_layers(artifact::Binder& binder, BindingPlan& out) {
+void bind_nvfp4_text_layers(artifact::Binder& binder, BindingPlan& out,
+                            ResidencyProfile residency) {
     for (std::size_t layer = 0; layer < kTextLayers; ++layer) {
         TextLayerPlan& target    = out.text_layers[layer];
         const std::string prefix = "text/layers/" + std::to_string(layer) + "/";
@@ -337,7 +339,7 @@ void validate_draft_ids(const artifact::Binder& binder, artifact::ObjectHandle h
 } // namespace
 
 ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_profile,
-                               qwen3_6::StartupFeatures features) {
+                               qwen3_6::StartupFeatures features, ResidencyProfile residency) {
     ArtifactLoadPlan load_plan;
     BindingPlan& out = load_plan.bindings;
     out.frontend     = qwen3_6::bind_frontend_resources(binder);
@@ -349,10 +351,10 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_
     switch (weights_profile) {
     case WeightsProfile::GroupwiseInt:
     case WeightsProfile::GroupwiseIntW8Endpoints:
-        bind_groupwise_text_layers(binder, out);
+        bind_groupwise_text_layers(binder, out, residency);
         break;
     case WeightsProfile::Nvfp4:
-        bind_nvfp4_text_layers(binder, out);
+        bind_nvfp4_text_layers(binder, out, residency);
         break;
     default:
         throw std::invalid_argument("qwen3_6_27b: invalid weights profile");

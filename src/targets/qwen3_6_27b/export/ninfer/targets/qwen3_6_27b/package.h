@@ -35,6 +35,11 @@ enum class WeightsProfile : std::uint8_t {
     Nvfp4,
 };
 
+enum class ResidencyProfile : std::uint8_t {
+    AllResident,
+    FfnOffload,
+};
+
 using Frontend       = qwen3_6::Frontend;
 using PreparedPrompt = qwen3_6::PreparedPrompt;
 using OutputSession  = qwen3_6::OutputSession;
@@ -83,9 +88,10 @@ struct Package {
     static constexpr std::string_view qwen3_8_model_id   = "qwen3.8-27b";
     static constexpr std::string_view qwen3_8_target_key = "qwen3_8_27b";
 
-    using WeightsProfile  = detail::WeightsProfile;
-    using LoadPlan        = detail::LoadPlan;
-    using LoadedModel     = detail::LoadedModel;
+    using WeightsProfile   = detail::WeightsProfile;
+    using ResidencyProfile = detail::ResidencyProfile;
+    using LoadPlan         = detail::LoadPlan;
+    using LoadedModel      = detail::LoadedModel;
     using Frontend        = detail::Frontend;
     using PreparedPrompt  = detail::PreparedPrompt;
     using OutputSession   = detail::OutputSession;
