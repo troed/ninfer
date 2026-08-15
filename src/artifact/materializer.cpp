@@ -82,6 +82,16 @@ void* MaterializedArtifact::host_data(ObjectHandle handle) const {
     return objects_[handle.index].host;
 }
 
+void* MaterializedArtifact::device_data_or_null(ObjectHandle handle) const noexcept {
+    if (handle.index >= objects_.size()) { return nullptr; }
+    return objects_[handle.index].device;
+}
+
+void* MaterializedArtifact::host_data_or_null(ObjectHandle handle) const noexcept {
+    if (handle.index >= objects_.size()) { return nullptr; }
+    return objects_[handle.index].host;
+}
+
 std::span<const std::byte> MaterializedArtifact::resource_bytes(ObjectHandle handle) const {
     if (handle.index >= objects_.size() || objects_[handle.index].resource.empty()) {
         throw ArtifactError("object handle does not name a materialized resource");

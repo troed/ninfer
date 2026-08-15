@@ -42,6 +42,8 @@ public:
 
     void* device_data(ObjectHandle handle) const;
     void* host_data(ObjectHandle handle) const;
+    void* device_data_or_null(ObjectHandle handle) const noexcept;
+    void* host_data_or_null(ObjectHandle handle) const noexcept;
     std::span<const std::byte> resource_bytes(ObjectHandle handle) const;
     std::vector<std::byte> take_resource_bytes(ObjectHandle handle);
 
