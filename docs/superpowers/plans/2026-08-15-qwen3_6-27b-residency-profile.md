@@ -1,6 +1,6 @@
 # Qwen3.6-27B Residency Profile Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Surface 3 of `docs/maintainer/weight-offload.md`: give the 27B package a per-tensor device-vs-host residency decision so the FFN/SwiGLU matrices of every text layer bind host-only while attention/GDN projections, norms, vocabulary endpoints, and the MTP/draft/vision extras stay device-resident. `AllResident` stays the default, so engine behavior is unchanged until surfaces 4-6 land.
 
@@ -18,7 +18,7 @@
 - Create: `tests/targets/qwen3_6_27b/test_residency.cpp`
 - Modify: `tests/CMakeLists.txt` (after the `ninfer_qwen3_6_27b_load_plan_test` block, ~line 116)
 
-- [ ] **Step 1: Create the test file**
+- [x] **Step 1: Create the test file**
 
 `tests/targets/qwen3_6_27b/test_residency.cpp`:
 
@@ -177,7 +177,7 @@ Notes:
 - `std::get_if` needs `<variant>`; `bindings.h` includes `<variant>` transitively. The file relies on `NINFER_SOURCE_DIR` (needs `NEEDS_SOURCE_DIR`) and CUDA (link `CUDA::cudart`), mirroring `ninfer_qwen3_6_27b_load_plan_test`.
 - `verify_residency` is profile-agnostic: it reads `plan.bindings.text_layers`/`token_embedding`/`output_head` and `data.runtime.*` for whichever artifact is present. For NVFP4, MLP is bound via `bind_nvfp4_weight`, so the assertion count `2 * kTextLayers` still holds and `data.runtime.full_layers[].post_mixer.*` are NVFP4 `Weight`s (payload==nullptr, host!=nullptr under FfnOffload).
 
-- [ ] **Step 2: Register the test**
+- [x] **Step 2: Register the test**
 
 Insert immediately after the `ninfer_qwen3_6_27b_load_plan_test` block in `tests/CMakeLists.txt`:
 
@@ -193,7 +193,7 @@ target_link_libraries(ninfer_qwen3_6_27b_residency_test PRIVATE CUDA::cudart)
 set_tests_properties(ninfer_qwen3_6_27b_residency_test PROPERTIES SKIP_RETURN_CODE 77)
 ```
 
-- [ ] **Step 3: Run the build to verify it fails (red)**
+- [x] **Step 3: Run the build to verify it fails (red)**
 
 ```bash
 cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_CUDA_ARCHITECTURES=120a
@@ -202,7 +202,7 @@ cmake --build build --target ninfer_qwen3_6_27b_residency_test
 
 Expected: FAIL. The target does not compile: `ResidencyProfile` is not a member of the 27B detail namespace, and `bind_artifact` has no 4th parameter.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/targets/qwen3_6_27b/test_residency.cpp tests/CMakeLists.txt
@@ -219,7 +219,7 @@ git commit -m "test(targets): add 27B residency profile scenarios"
 - Modify: `src/targets/qwen3_6_27b/impl/load/bindings.cpp`
 - Modify: `src/targets/qwen3_6_27b/impl/package.cpp`
 
-- [ ] **Step 1: Declare the enum and Package alias**
+- [x] **Step 1: Declare the enum and Package alias**
 
 In `src/targets/qwen3_6_27b/export/ninfer/targets/qwen3_6_27b/package.h`, inside `namespace detail` immediately after the `WeightsProfile` enum (which ends with `};` at line 30):
 
@@ -236,7 +236,7 @@ In the `struct Package` public alias block (near `using WeightsProfile = detail:
     using ResidencyProfile = detail::ResidencyProfile;
 ```
 
-- [ ] **Step 2: Thread through bind_artifact declaration**
+- [x] **Step 2: Thread through bind_artifact declaration**
 
 In `src/targets/qwen3_6_27b/impl/load/bindings.h`, change the `bind_artifact` declaration (line 120-121) to:
 
@@ -248,7 +248,7 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_
 
 `ResidencyProfile` resolves via the `detail` namespace; `bindings.h` already includes `package.h`.
 
-- [ ] **Step 3: Update the definition and forward residency into the layer binders**
+- [x] **Step 3: Update the definition and forward residency into the layer binders**
 
 In `src/targets/qwen3_6_27b/impl/load/bindings.cpp`:
 
@@ -266,11 +266,11 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_
 
 and its two dispatch calls become `bind_groupwise_text_layers(binder, out, residency);` and `bind_nvfp4_text_layers(binder, out, residency);`.
 
-- [ ] **Step 4: Update package.cpp plan_load call**
+- [x] **Step 4: Update package.cpp plan_load call**
 
 In `src/targets/qwen3_6_27b/impl/package.cpp:99-104`, the `plan_load` body stays exactly as-is: `bind_artifact(binder, weights_profile, qwen3_6::startup_features(options))` now uses the default `AllResident`. No change needed there; verify it still compiles.
 
-- [ ] **Step 5: Build and run the residency test (still logically red on placement)**
+- [x] **Step 5: Build and run the residency test (still logically red on placement)**
 
 ```bash
 cmake --build build --target ninfer_qwen3_6_27b_residency_test
@@ -279,7 +279,7 @@ NINFER_QWEN3_8_27B_WEIGHTS=$HOME/llm-models/qwen3_8_27b.ninfer /usr/bin/ctest --
 
 Expected: the target COMPILES, and the test FAILS with `FfnOffload host tensor count mismatch: got 0 expected 128` (bindings still bind everything device).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/targets/qwen3_6_27b/export/ninfer/targets/qwen3_6_27b/package.h src/targets/qwen3_6_27b/impl/load/bindings.h src/targets/qwen3_6_27b/impl/load/bindings.cpp
@@ -293,7 +293,7 @@ git commit -m "feat(targets): thread the 27B residency profile through binding"
 **Files:**
 - Modify: `src/targets/qwen3_6_27b/impl/load/bindings.cpp`
 
-- [ ] **Step 1: Add a placement helper in the anonymous namespace**
+- [x] **Step 1: Add a placement helper in the anonymous namespace**
 
 In `src/targets/qwen3_6_27b/impl/load/bindings.cpp`, inside `namespace {` after `endpoint_format` (line 44):
 
@@ -304,7 +304,7 @@ artifact::TensorPlacement ffn_placement(ResidencyProfile residency) noexcept {
 }
 ```
 
-- [ ] **Step 2: Groupwise MLP binds honor residency**
+- [x] **Step 2: Groupwise MLP binds honor residency**
 
 In `bind_groupwise_text_layers`, change the MLP binds (lines 243-246) to:
 
@@ -333,7 +333,7 @@ WeightPlan bind_weight(artifact::Binder& binder, std::string_view name, NumericF
 
 All other `bind_weight` call sites in the file (attention/GDN projections, output, endpoints) must now pass `artifact::TensorPlacement::Device` explicitly. These are: lines 208-211, 217-218, 231-234, 238-239, 260-261, 274-275, 300-301, 347-348, 362. (Do not change bindings for `bind_device_tensor`-style small tensors; those stay device.)
 
-- [ ] **Step 3: NVFP4 MLP binds honor residency**
+- [x] **Step 3: NVFP4 MLP binds honor residency**
 
 `bind_nvfp4_weight` (lines 74-97) gains a trailing `artifact::TensorPlacement placement` parameter and routes it:
 
@@ -355,7 +355,7 @@ WeightPlan bind_nvfp4_weight(artifact::Binder& binder, std::string_view name, st
 
 In `bind_nvfp4_text_layers`, the MLP binds (lines 310-314) pass `ffn_placement(residency)` as the new trailing argument. All other `bind_nvfp4_weight` call sites (attention/GDN projections, output) pass `artifact::TensorPlacement::Device`.
 
-- [ ] **Step 4: Make the NVFP4 wrapper host-safe**
+- [x] **Step 4: Make the NVFP4 wrapper host-safe**
 
 The local `materialized_weight` (lines 99-131) must not call the throwing `materialized.device_data(plan.object)` when the object is host-placed. Replace the base-pointer line (line 109) and populate `out.host`:
 
@@ -376,7 +376,7 @@ The local `materialized_weight` (lines 99-131) must not call the throwing `mater
 
 The `else` branch already delegates to `artifact::materialized_weight` which is host-aware.
 
-- [ ] **Step 5: Build and run the residency test (green)**
+- [x] **Step 5: Build and run the residency test (green)**
 
 ```bash
 cmake --build build --target ninfer_qwen3_6_27b_residency_test
@@ -389,7 +389,7 @@ Expected: PASS (exit 0). Also run the full filtered gate:
 /usr/bin/ctest --test-dir build --output-on-failure -R 'ninfer_artifact_|ninfer_arena_test|ninfer_tensor_test|ninfer_qwen3_6_27b_load_plan_test|ninfer_qwen3_6_27b_residency_test'
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/targets/qwen3_6_27b/impl/load/bindings.cpp
@@ -403,7 +403,7 @@ git commit -m "feat(targets): bind 27B FFN matrices host-resident under FfnOfflo
 **Files:**
 - Modify: `docs/maintainer/weight-offload.md`
 
-- [ ] **Step 1: Full build and verification**
+- [x] **Step 1: Full build and verification**
 
 ```bash
 cmake --build build
@@ -412,7 +412,7 @@ git diff --check
 
 Expected: full tree builds (all targets), `git diff --check` silent.
 
-- [ ] **Step 2: Extend the section-5 status paragraph**
+- [x] **Step 2: Extend the section-5 status paragraph**
 
 In `docs/maintainer/weight-offload.md`, extend the Status paragraph (currently lines 123-127) to add surface 3:
 
@@ -428,11 +428,11 @@ to the staging-arena phase (surface 4). Surface 3 does not yet run decode: stage
 graph interleave are surfaces 4-5.
 ```
 
-- [ ] **Step 3: Mark all plan checkboxes `- [x]`**
+- [x] **Step 3: Mark all plan checkboxes `- [x]`**
 
 In `docs/superpowers/plans/2026-08-15-qwen3_6-27b-residency-profile.md`, change every `- [ ]` to `- [x]`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/maintainer/weight-offload.md docs/superpowers/plans/2026-08-15-qwen3_6-27b-residency-profile.md

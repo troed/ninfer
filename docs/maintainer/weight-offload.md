@@ -120,15 +120,15 @@ down via the existing planner; on 16 GB the 27B KV ceiling is reduced from the 3
 | 7 | Tests | artifact binder host-placement contract tests, real-artifact load, memory_summary | new host-placement coverage |
 | 8 | Docs | `docs/cli.md`, `docs/performance.md`, model cards | option surface and measurement caveat |
 
-Status: surface 1 is implemented as the first slice — binder host placement
+Status: surfaces 1-3 are implemented — binder host placement
 (`TensorPlacement::Host`, host spans in `MaterializationPlan`), materializer host store
-(`MaterializedArtifact::host_data(handle)` + host-bytes stats), and `bind_tensor` host dispatch.
-The host store is plain host memory; pinning (`cudaHostRegister`) is deferred to the staging-arena
-phase (surface 4). Surface 2 is implemented — `Tensor`/`Weight` carry an optional host address
-(`Tensor::host`, `Weight::host`) propagated through the tensor view operations, and
-`materialized_tensor`/`materialized_weight` populate the host side from the host store while
-leaving device-side pointers null for host-only objects. The 27B residency profile (surface 3) is
-not yet implemented.
+(`MaterializedArtifact::host_data(handle)` + host-bytes stats), `bind_tensor` host dispatch,
+Tensor/Weight host addresses with view propagation, and the 27B `ResidencyProfile` (`AllResident`
+default, `FfnOffload` binds the per-layer FFN/SwiGLU gate/up + down matrices host-only while
+attention/GDN projections, norms, vocabulary endpoints, and the MTP/draft/vision extras stay
+device-resident). The host store is plain host memory; pinning (`cudaHostRegister`) is deferred
+to the staging-arena phase (surface 4). Surface 3 does not yet run decode: staged copies and
+graph interleave are surfaces 4-5.
 
 Unchanged: KV cache, workspace, RequestMemory, scheduler round logic, kernels, media/frontend
 paths.
