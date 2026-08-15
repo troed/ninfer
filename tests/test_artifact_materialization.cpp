@@ -233,6 +233,25 @@ int main() {
             require(host_materialized.stats().host_bytes == kHostTensor.size() &&
                         host_materialized.stats().host_capacity_bytes == kHostTensor.size(),
                     "host materialization statistics are incomplete");
+
+            const auto host_view = ninfer::artifact::materialized_tensor(
+                host_materialized, host_tensor, ninfer::artifact::NumericFormat::BF16, {8});
+            require(host_view.data == nullptr &&
+                        host_view.host == host_materialized.host_data(host_tensor),
+                    "host tensor view carries the wrong addresses");
+
+            const auto host_weight = ninfer::artifact::materialized_weight(
+                host_materialized, host_tensor, ninfer::artifact::NumericFormat::BF16, 8, 1);
+            require(host_weight.payload == nullptr && host_weight.qdata == nullptr &&
+                        host_weight.host == host_materialized.host_data(host_tensor),
+                    "host weight carries the wrong addresses");
+
+            const auto host_device_view = ninfer::artifact::materialized_tensor(
+                host_materialized, host_device_tensor, ninfer::artifact::NumericFormat::BF16, {2});
+            require(host_device_view.data ==
+                        host_materialized.device_data(host_device_tensor) &&
+                        host_device_view.host == nullptr,
+                    "device tensor view carries the wrong addresses");
         }
         return 0;
     } catch (const std::exception& error) {
