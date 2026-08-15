@@ -1,6 +1,7 @@
 #include "artifact/binder.h"
 #include "artifact/materializer.h"
 #include "artifact/reader.h"
+#include "artifact/typed_binding.h"
 #include "artifact_fixture.h"
 #include "core/device.h"
 
@@ -10,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 
@@ -29,6 +31,18 @@ constexpr std::array<std::byte, 4> kTensor = {
 constexpr std::array<std::byte, 8> kSecondTensor = {
     std::byte{3}, std::byte{3}, std::byte{3}, std::byte{3},
     std::byte{3}, std::byte{3}, std::byte{3}, std::byte{3},
+};
+constexpr std::array<std::byte, 16> kHostTensor = {
+    std::byte{1}, std::byte{1}, std::byte{1}, std::byte{1},
+    std::byte{1}, std::byte{1}, std::byte{1}, std::byte{1},
+    std::byte{1}, std::byte{1}, std::byte{1}, std::byte{1},
+    std::byte{1}, std::byte{1}, std::byte{1}, std::byte{1},
+};
+constexpr std::array<std::byte, 4> kHostFixtureDeviceTensor = {
+    std::byte{2},
+    std::byte{2},
+    std::byte{2},
+    std::byte{2},
 };
 
 ninfer::test::artifact_fixture::TemporaryArtifact write_fixture() {
@@ -59,6 +73,31 @@ ninfer::test::artifact_fixture::TemporaryArtifact write_fixture() {
                         })},
         },
         "materialization");
+}
+
+ninfer::test::artifact_fixture::TemporaryArtifact write_host_fixture() {
+    using Json = ninfer::test::artifact_fixture::Json;
+    return ninfer::test::artifact_fixture::write_fixture(
+        {
+            {"identity", {{"model_id", "fixture-model"}, {"weights_id", "fixture-weights"}}},
+            {"objects", Json::array({
+                            {{"name", "weights/host"},
+                             {"kind", "tensor"},
+                             {"shape", {8}},
+                             {"format", "BF16"},
+                             {"layout", "contiguous-le-v1"},
+                             {"offset", 256},
+                             {"bytes", 16}},
+                            {{"name", "weights/device"},
+                             {"kind", "tensor"},
+                             {"shape", {2}},
+                             {"format", "BF16"},
+                             {"layout", "contiguous-le-v1"},
+                             {"offset", 8192},
+                             {"bytes", 4}},
+                        })},
+        },
+        "host-materialization");
 }
 
 bool cuda_unavailable(cudaError_t error) {
@@ -159,6 +198,42 @@ int main() {
         require(materialized.device_arena().capacity() == plan.device_capacity_bytes &&
                     materialized.device_arena().used() == plan.device_capacity_bytes,
                 "materialized tensor does not own the planned device backing");
+
+        {
+            auto host_fixture = write_host_fixture();
+            ninfer::artifact::Reader host_reader(host_fixture.path);
+            ninfer::artifact::Binder host_binder(host_reader);
+            const auto host_tensor = ninfer::artifact::bind_tensor(
+                host_binder, "weights/host", ninfer::artifact::NumericFormat::BF16, {8},
+                ninfer::artifact::TensorPlacement::Host);
+            constexpr std::array<std::uint64_t, 1> host_device_shape = {2};
+            const auto host_device_tensor = host_binder.require_tensor(
+                "weights/device", ninfer::artifact::NumericFormat::BF16,
+                ninfer::artifact::StorageLayout::ContiguousLeV1, host_device_shape);
+            host_binder.materialize_on_device(host_device_tensor);
+            const auto host_plan = host_binder.finish();
+            require(host_plan.object_count == 2 && host_plan.host_tensor_objects.size() == 1 &&
+                        host_plan.host_capacity_bytes == kHostTensor.size() &&
+                        host_plan.device_objects.size() == 1 &&
+                        host_plan.device_capacity_bytes == kHostFixtureDeviceTensor.size(),
+                    "host binder produced the wrong materialization plan");
+
+            ninfer::DeviceContext host_device(0);
+            auto host_materialized =
+                ninfer::artifact::materialize(host_reader, host_plan, host_device);
+            require(std::memcmp(host_materialized.host_data(host_tensor), kHostTensor.data(),
+                                kHostTensor.size()) == 0,
+                    "host tensor payload differs from the artifact");
+            std::array<std::byte, kHostFixtureDeviceTensor.size()> host_device_copied{};
+            CUDA_CHECK(cudaMemcpy(host_device_copied.data(),
+                                  host_materialized.device_data(host_device_tensor),
+                                  host_device_copied.size(), cudaMemcpyDeviceToHost));
+            require(host_device_copied == kHostFixtureDeviceTensor,
+                    "host-fixture device tensor payload differs from the artifact");
+            require(host_materialized.stats().host_bytes == kHostTensor.size() &&
+                        host_materialized.stats().host_capacity_bytes == kHostTensor.size(),
+                    "host materialization statistics are incomplete");
+        }
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
