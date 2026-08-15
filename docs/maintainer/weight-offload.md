@@ -124,7 +124,11 @@ Status: surface 1 is implemented as the first slice — binder host placement
 (`TensorPlacement::Host`, host spans in `MaterializationPlan`), materializer host store
 (`MaterializedArtifact::host_data(handle)` + host-bytes stats), and `bind_tensor` host dispatch.
 The host store is plain host memory; pinning (`cudaHostRegister`) is deferred to the staging-arena
-phase (surface 4).
+phase (surface 4). Surface 2 is implemented — `Tensor`/`Weight` carry an optional host address
+(`Tensor::host`, `Weight::host`) propagated through the tensor view operations, and
+`materialized_tensor`/`materialized_weight` populate the host side from the host store while
+leaving device-side pointers null for host-only objects. The 27B residency profile (surface 3) is
+not yet implemented.
 
 Unchanged: KV cache, workspace, RequestMemory, scheduler round logic, kernels, media/frontend
 paths.
