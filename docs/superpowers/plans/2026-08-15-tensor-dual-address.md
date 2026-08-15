@@ -1,6 +1,6 @@
 # Tensor Dual-Address Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Give `Tensor` and `Weight` an optional host address beside their device `data`/`payload` pointers, so the artifact layer can produce views that describe host-resident (offloaded) tensors, and propagate that address through the tensor view operations.
 
@@ -18,7 +18,7 @@
 - Modify: `tests/test_tensor.cpp`
 - Test: `tests/test_tensor.cpp`
 
-- [ ] **Step 1: Add the failing scenarios**
+- [x] **Step 1: Add the failing scenarios**
 
 Add a second storage buffer and dual-address scenarios inside `main()` in `tests/test_tensor.cpp`. Insert the host storage declaration immediately after `auto* base = storage;` (line 63):
 
@@ -63,12 +63,12 @@ Insert the dual-address block immediately after the `reshaped.numel` check (line
 
 Note: `slice(1, 1, 2)` on a `{2,3,4}` BF16 tensor has `nb[1] == 4`, so the offset is `1 * 4 == 4` bytes; both `data` and `host` must advance by exactly 4 bytes.
 
-- [ ] **Step 2: Run the test to verify it fails to compile**
+- [x] **Step 2: Run the test to verify it fails to compile**
 
 Run: `cmake --build build --target ninfer_tensor_test`
 Expected: compile failure — `'host' is not a member of 'ninfer::Tensor'` and no matching constructor for `Tensor(void*, void*, DType, ...)`.
 
-- [ ] **Step 3: Commit the failing test**
+- [x] **Step 3: Commit the failing test**
 
 ```bash
 git add tests/test_tensor.cpp
@@ -84,7 +84,7 @@ git commit -m "test(core): add host-address propagation scenarios for Tensor"
 - Modify: `src/core/tensor.cpp`
 - Test: `tests/test_tensor.cpp`
 
-- [ ] **Step 1: Add the `host` member and constructor to `Tensor`**
+- [x] **Step 1: Add the `host` member and constructor to `Tensor`**
 
 In `src/core/tensor.h`, add the `host` member right after `data` and a second constructor:
 
@@ -122,7 +122,7 @@ struct Weight {
     ...
 ```
 
-- [ ] **Step 2: Implement the constructor and propagation**
+- [x] **Step 2: Implement the constructor and propagation**
 
 In `src/core/tensor.cpp`, replace the existing constructor with a delegating pair, and update `view` and `slice`. The constructor becomes:
 
@@ -180,13 +180,13 @@ Tensor Tensor::slice(int dim, std::int32_t start, std::int32_t len) const {
 
 `permute` copies the struct (`Tensor out = *this;`) and only reorders `ne`/`nb`, so `host` is preserved automatically; no change needed.
 
-- [ ] **Step 3: Run the test to verify it passes**
+- [x] **Step 3: Run the test to verify it passes**
 
 Run: `cmake --build build --target ninfer_tensor_test`
 Run: `/usr/bin/ctest --test-dir build --output-on-failure -R 'ninfer_tensor_test'`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/core/tensor.h src/core/tensor.cpp
@@ -204,7 +204,7 @@ git commit -m "feat(core): carry an optional host address on Tensor and Weight"
 
 **Context:** `Tensor::host`/`Weight::host` mirror the base of the object. The four `Tensor` view ops propagate host (Task 2). Two other derivation sites rebuild a value-type view from base pointers and would silently drop host once a weight is host-backed: the canonical `Weight -> Tensor` projection `as_dense` (`src/core/weight.h:10-23`) and the GDN conv helper `flatten_columns` (`src/ops/wrapper/gdn_input_proj.cpp:114-116`). `row_view` in both target bindings does NOT need a change: it keeps `payload` at the object base, and `Weight::host` mirrors `payload`, so a row view correctly keeps the object-base host pointer. This task closes the two real gaps so the dual-address contract is coherent repo-wide before Task 4 populates host addresses.
 
-- [ ] **Step 1: Add a failing test for `as_dense` host propagation**
+- [x] **Step 1: Add a failing test for `as_dense` host propagation**
 
 In `tests/test_tensor.cpp`, after the existing dual-address block (after the `dual_reshaped.host` check), add:
 
@@ -227,7 +227,7 @@ In `tests/test_tensor.cpp`, after the existing dual-address block (after the `du
 Run: `cmake --build build --target ninfer_tensor_test`
 Expected: FAIL — `dense.host` is `nullptr` (the `as_dense` projection uses the 3-arg constructor).
 
-- [ ] **Step 2: Propagate host in `as_dense`**
+- [x] **Step 2: Propagate host in `as_dense`**
 
 In `src/core/weight.h`, pass the host through the 4-arg constructor at all four rank branches:
 
@@ -248,7 +248,7 @@ inline Tensor as_dense(const Weight& w) {
 }
 ```
 
-- [ ] **Step 3: Propagate host in `flatten_columns`**
+- [x] **Step 3: Propagate host in `flatten_columns`**
 
 In `src/ops/wrapper/gdn_input_proj.cpp:114-116`:
 
@@ -258,13 +258,13 @@ Tensor flatten_columns(const Tensor& tensor, std::int32_t rows, ConvGeometry geo
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify**
+- [x] **Step 4: Run the tests to verify**
 
 Run: `cmake --build build --target ninfer_tensor_test`
 Run: `/usr/bin/ctest --test-dir build --output-on-failure -R 'ninfer_tensor_test'`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/core/weight.h src/ops/wrapper/gdn_input_proj.cpp tests/test_tensor.cpp
@@ -279,7 +279,7 @@ git commit -m "feat(core): propagate host address through weight projections"
 - Modify: `tests/test_artifact_materialization.cpp`
 - Test: `tests/test_artifact_materialization.cpp`
 
-- [ ] **Step 1: Add the failing assertions**
+- [x] **Step 1: Add the failing assertions**
 
 In `tests/test_artifact_materialization.cpp`, inside the host-fixture block (which starts at `auto host_fixture = write_host_fixture();` and ends at the closing brace after the stats check on line 235), add the following block immediately after the `host materialization statistics are incomplete` require (line 235) and before the closing `}` of the block:
 
@@ -306,13 +306,13 @@ In `tests/test_artifact_materialization.cpp`, inside the host-fixture block (whi
 
 Rationale for the shapes: the host fixture's `weights/host` object is `{8}` BF16 = 16 bytes; as a contiguous weight `8` rows x `1` column = 16 bytes, matching `kHostTensor.size()`. The device object `weights/device` is `{2}` BF16 = 4 bytes, matching `kHostFixtureDeviceTensor.size()`.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cmake --build build --target ninfer_artifact_materialization_test`
 Run: `/usr/bin/ctest --test-dir build --output-on-failure -R 'ninfer_artifact_materialization_test'`
 Expected: FAIL — currently `materialized_tensor` and `materialized_weight` call `device_data(handle)` which throws for the host-only object (`object handle does not name a materialized tensor`), so the process exits 1 with that message.
 
-- [ ] **Step 3: Commit the failing test**
+- [x] **Step 3: Commit the failing test**
 
 ```bash
 git add tests/test_artifact_materialization.cpp
@@ -329,7 +329,7 @@ git commit -m "test(artifact): assert dual-address tensor and weight views"
 - Modify: `src/artifact/typed_binding.cpp`
 - Test: `tests/test_artifact_materialization.cpp`
 
-- [ ] **Step 1: Add non-throwing accessors to `MaterializedArtifact`**
+- [x] **Step 1: Add non-throwing accessors to `MaterializedArtifact`**
 
 In `src/artifact/materializer.h`, add two accessors after `host_data` (line 44):
 
@@ -356,7 +356,7 @@ void* MaterializedArtifact::host_data_or_null(ObjectHandle handle) const noexcep
 }
 ```
 
-- [ ] **Step 2: Set the host address in the binding helpers**
+- [x] **Step 2: Set the host address in the binding helpers**
 
 In `src/artifact/typed_binding.cpp`, `contiguous_weight` becomes:
 
@@ -430,13 +430,13 @@ Tensor materialized_tensor(const MaterializedArtifact& materialized, ObjectHandl
 
 `materialized_weight` itself is unchanged (it already dispatches by `storage_layout_for(format)`).
 
-- [ ] **Step 3: Run the tests to verify they pass**
+- [x] **Step 3: Run the tests to verify they pass**
 
 Run: `cmake --build build --target ninfer_artifact_materialization_test ninfer_artifact_reader_test ninfer_tensor_test`
 Run: `/usr/bin/ctest --test-dir build --output-on-failure -R 'ninfer_artifact_|ninfer_tensor_test'`
 Expected: all PASS (reader, materialization, tensor).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/artifact/materializer.h src/artifact/materializer.cpp src/artifact/typed_binding.cpp
@@ -450,22 +450,22 @@ git commit -m "feat(artifact): populate host addresses on tensor and weight view
 **Files:**
 - Modify: `docs/maintainer/weight-offload.md`
 
-- [ ] **Step 1: Full-tree build**
+- [x] **Step 1: Full-tree build**
 
 Run: `cmake --build build`
 Expected: full build succeeds with no errors.
 
-- [ ] **Step 2: Filtered test suite**
+- [x] **Step 2: Filtered test suite**
 
 Run: `/usr/bin/ctest --test-dir build --output-on-failure -R 'ninfer_artifact_|ninfer_arena_test|ninfer_tensor_test'`
 Expected: all PASS (reader, materialization, arena, tensor).
 
-- [ ] **Step 3: Whitespace check**
+- [x] **Step 3: Whitespace check**
 
 Run: `git diff --check`
 Expected: silent, exit 0.
 
-- [ ] **Step 4: Update the design doc status**
+- [x] **Step 4: Update the design doc status**
 
 In `docs/maintainer/weight-offload.md` section 5, extend the Status paragraph (currently lines 123-127) to record surface 2. The new text:
 
@@ -481,13 +481,13 @@ leaving device-side pointers null for host-only objects. The 27B residency profi
 not yet implemented.
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/maintainer/weight-offload.md
 git commit -m "docs(offload): mark tensor dual-address as implemented"
 ```
 
-- [ ] **Step 6: Final integration review**
+- [x] **Step 6: Final integration review**
 
 Run `git log --oneline -6` to confirm the five commits, then request the final integration code review of the branch before merging (finishing-a-development-branch).
