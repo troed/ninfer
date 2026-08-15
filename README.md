@@ -2,9 +2,12 @@
 
 > Selected checkpoints. Maximum single-GPU inference performance.
 
-NInfer is a from-scratch C++/CUDA inference engine for explicitly registered Qwen checkpoints on a
-single NVIDIA GeForce RTX 5090. It runs text, image, and video prompts through a local CLI or
-OpenAI-/Anthropic-compatible HTTP APIs.
+NInfer is a from-scratch C++/CUDA inference engine for explicitly registered Qwen checkpoints on
+one NVIDIA `sm_120a` GPU. It runs text, image, and video prompts through a local CLI or
+OpenAI-/Anthropic-compatible HTTP APIs. The RTX 5090 runs every registered identity fully
+resident; the 27B dense identities additionally run on 16 GB-class `sm_120a` cards by placing
+their per-layer FFN matrices in pinned host memory and streaming them through a fixed device
+staging arena during decode (`--weight-residency ffn`).
 
 NInfer deliberately supports a closed set of model artifacts instead of acting as a general model
 runtime:
@@ -27,6 +30,11 @@ and serving routes.
 
 The published measurements currently cover the three Qwen3.6 artifact profiles. Qwen3.8-27B is
 supported by current NInfer builds but is not yet included in the benchmark campaign.
+
+Measurements on smaller `sm_120a` cards with host weight offload are reported in
+[docs/performance.md](docs/performance.md) under "Host weight offload on smaller `sm_120a`
+cards". On a 16 GB RTX 5060 Ti the Qwen3.8-27B `groupwise-int` identity reaches about
+10.6 decode tok/s with MTP3 and 41 of 64 FFN layers device-resident.
 
 ### Concurrent MTP3 decode
 
@@ -101,7 +109,8 @@ notes.
 NInfer currently requires:
 
 - 64-bit Linux;
-- NVIDIA GeForce RTX 5090 (`sm_120a`);
+- one NVIDIA `sm_120a` GPU; the RTX 5090's 32 GiB runs every identity fully resident, and the
+  27B dense identities also run on 16 GB-class `sm_120a` cards with `--weight-residency ffn`;
 - NVIDIA driver support for CUDA 13.1 and the CUDA Toolkit 13.1 or newer;
 - CMake 3.28 or newer and a C++20-capable host compiler;
 - `pkg-config`;
@@ -279,6 +288,9 @@ All three registered model IDs support:
 - startup-bounded small-scale concurrent serving with true batched decode;
 - MTP speculative decoding with draft windows from one to five;
 - BF16 and INT8 group-64 KV cache;
+- host weight offload for the 27B dense identities (`--weight-residency ffn`), with a
+  partial-residency knob (`--n-ffn-layers N`) that keeps the first N FFN layers resident to
+  trade VRAM against throughput;
 - model- and thinking-mode-aware official sampling defaults, with explicit greedy, temperature,
   top-k, top-p, min-p, and presence/frequency-penalty overrides;
 - compatible-prefix reuse;
@@ -293,7 +305,10 @@ from one to fifteen.
 
 - Only the four `(model_id, weights_id)` artifact identities listed above are accepted product
   identities.
-- Execution is specialized for one RTX 5090 and one CUDA device.
+- Execution is specialized for one NVIDIA `sm_120a` GPU and one CUDA device. The RTX 5090 runs
+  every registered identity fully resident; cooperative kernels query the live GPU's
+  multiprocessor count and step down their split-K schedule when the grid cannot be
+  co-resident, so smaller `sm_120a` cards (for example the 16 GB RTX 5060 Ti) run correctly.
 - One Engine owns one resident model and supports a startup-fixed capacity of 1–8 active requests.
   Decode-ready requests are compacted at round boundaries and executed in one batched model
   traversal.
