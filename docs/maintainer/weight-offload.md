@@ -3,7 +3,9 @@
 Status: implementation in progress. Surfaces 1-6 of the change-surface table are implemented
 (see section 5): artifact host placement, tensor host addresses, the 27B residency profile, the
 staging arena/slot binding, the graph-capture staging interleave, and the public engine residency
-option with load/memory-summary reporting. The remaining test/documentation surfaces (7-8) are
+option with load/memory-summary reporting. A partial-residency knob
+(`EngineOptions::resident_ffn_layers`, CLI `--n-ffn-layers N`) keeps the first N FFN text layers
+device-resident while the rest stream. The remaining test/documentation surfaces (7-8) are
 not yet implemented. Scope target is the Qwen3.6-27B dense identities (`groupwise-int` and
 `nvfp4`); the 35B-A3B MoE target is a bonus item with extra work.
 
@@ -84,6 +86,17 @@ resident; a stricter budget streams progressively larger sets (for example also 
 additional layers), and a zero budget streams the entire weight set. This mirrors llama.cpp's
 tensor-level offload semantics and gives one familiar knob.
 
+Partial residency (`resident_ffn_layers = N`): the first N text-layer FFN
+matrices (indices 0..N-1) are bound device-resident; layers N..63 stream from the
+pinned host store through the staging arena. All 64 text-layer FFN matrices are
+byte-identical in the registered identities (gate_up 34816x5120 + down 5120x17408;
+153,190,400 B groupwise, 150,405,632 B NVFP4 per layer), so "N largest layers"
+degenerates to "any N layers", and the deterministic first-N prefix is the exact
+behavior. `staged_weights` shrinks to 2*(64-N) entries; the staging arena stays
+2 x per-layer-unit regardless of N. Resident layers are skipped by the
+`post_mixer` staging gate (`weight.host == nullptr`), so they never receive a
+staging copy and their payloads stay in the backing weights arena.
+
 ### 4.3 Resident staging arena
 
 A new device `DeviceArena` with fixed addresses holds the streaming slots. Slot capacity is
@@ -143,7 +156,11 @@ the public engine residency option (`EngineOptions::weight_residency`, default `
 `FfnOffload` is selectable through the CLI `--weight-residency ffn`), with `LoadSummary` reporting
 the pinned host store (`host_bytes`, `host_capacity_bytes`) and `MemorySummary` reporting the
 staging arena and `host_store_bytes`. FfnOffload decode runs correctly through the public Engine;
-the 35B-A3B target rejects the offload option.
+the 35B-A3B target rejects the offload option. A partial-residency knob
+(`EngineOptions::resident_ffn_layers`, default 0 = all
+stream; CLI `--n-ffn-layers N`) keeps the first N FFN text layers device-resident
+and validates `N <= 64` in the 27B binder; MTP3 under FfnOffload is verified
+end-to-end.
 
 Unchanged: KV cache, workspace, RequestMemory, scheduler round logic, kernels, media/frontend
 paths.

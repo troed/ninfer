@@ -301,7 +301,9 @@ from one to fifteen.
   multi-GPU execution, CPU-compute offload, or distributed serving. Weight offload is supported:
   the 27B dense identities can place their per-layer FFN matrices in pinned host memory
   (`--weight-residency ffn`) and stream them through a fixed device staging arena during decode,
-  which is how they load on GPUs with less VRAM than the resident weights.
+  which is how they load on GPUs with less VRAM than the resident weights. A partial-residency
+  knob (`--n-ffn-layers N`) keeps the first N FFN layers resident to trade VRAM against
+  throughput.
 - `--max-context` is the logical ceiling of each sequence and is configurable up to the registered
   models' native 262,144-token limit. `--kv-capacity N` explicitly sizes the shared Main Text KV
   pool for all active and retained sequences, while `--kv-capacity auto` selects the largest usable

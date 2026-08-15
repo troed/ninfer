@@ -39,7 +39,7 @@
 - Modify: `tests/targets/qwen3_6_27b/test_residency.cpp`
 - Modify: `tests/targets/qwen3_6_27b/test_engine_offload_real.cpp`
 
-- [ ] **Step 1: Add the partial-residency arm to the residency test**
+- [x] **Step 1: Add the partial-residency arm to the residency test**
 
 In `tests/targets/qwen3_6_27b/test_residency.cpp`, after the `verify_residency` function (before `} // namespace`), add:
 
@@ -173,7 +173,7 @@ In `main()`, after each `verify_residency(...) != 0` check for a present artifac
 
 (and the same for `legacy` → `GroupwiseInt` and `nvfp4` → `Nvfp4`).
 
-- [ ] **Step 2: Add the partial and MTP arms to the engine offload test**
+- [x] **Step 2: Add the partial and MTP arms to the engine offload test**
 
 In `tests/targets/qwen3_6_27b/test_engine_offload_real.cpp`:
 
@@ -284,7 +284,7 @@ int main() {
 }
 ```
 
-- [ ] **Step 3: Build to verify it fails**
+- [x] **Step 3: Build to verify it fails**
 
 Run: `cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_CUDA_ARCHITECTURES=120a && cmake --build build --target ninfer_qwen3_6_27b_residency_test ninfer_qwen3_6_27b_engine_offload_real_test`
 
@@ -293,7 +293,7 @@ Expected: FAIL to compile with exactly these error kinds:
 - `test_engine_offload_real.cpp: 'struct ninfer::EngineOptions' has no member named 'resident_ffn_layers'` (×3 call sites).
 No other error kinds. (The MTP arm itself only uses existing members, so it compiles; the whole test TU is red because of the other two arms.)
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/targets/qwen3_6_27b/test_residency.cpp tests/targets/qwen3_6_27b/test_engine_offload_real.cpp
@@ -310,7 +310,7 @@ git commit -m "test(targets): add partial FFN residency and MTP offload scenario
 - Modify: `src/targets/qwen3_6_27b/impl/load/bindings.cpp`
 - Modify: `src/targets/qwen3_6_27b/impl/package.cpp`
 
-- [ ] **Step 1: Add the public field**
+- [x] **Step 1: Add the public field**
 
 In `include/ninfer/types.h`, in `EngineOptions`, immediately after `WeightResidency weight_residency   = WeightResidency::AllResident;` (line 85), insert:
 
@@ -320,7 +320,7 @@ In `include/ninfer/types.h`, in `EngineOptions`, immediately after `WeightReside
 
 (aligning `=` to column 40, matching `kv_cache`/`weight_residency`.)
 
-- [ ] **Step 2: bind_artifact declaration gains the knob**
+- [x] **Step 2: bind_artifact declaration gains the knob**
 
 In `src/targets/qwen3_6_27b/impl/load/bindings.h`, change the `bind_artifact` declaration (lines 122-124) to:
 
@@ -331,7 +331,7 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_
                                std::uint32_t resident_ffn_layers = 0);
 ```
 
-- [ ] **Step 3: bindings.cpp — per-layer placement helper**
+- [x] **Step 3: bindings.cpp — per-layer placement helper**
 
 In `src/targets/qwen3_6_27b/impl/load/bindings.cpp`, replace the 2-arg `ffn_placement` (lines 46-49) with:
 
@@ -344,7 +344,7 @@ artifact::TensorPlacement ffn_placement(ResidencyProfile residency, std::uint32_
 }
 ```
 
-- [ ] **Step 4: bindings.cpp — thread through both layer binders**
+- [x] **Step 4: bindings.cpp — thread through both layer binders**
 
 Change `bind_groupwise_text_layers` signature (line 249-250) to:
 
@@ -364,7 +364,7 @@ void bind_nvfp4_text_layers(artifact::Binder& binder, BindingPlan& out,
 
 and its MLP binds (lines 376-382) from `ffn_placement(residency)` to `ffn_placement(residency, resident_ffn_layers, layer)` at both :379 and :382.
 
-- [ ] **Step 5: bindings.cpp — bind_artifact definition gains param + validation**
+- [x] **Step 5: bindings.cpp — bind_artifact definition gains param + validation**
 
 Change the `bind_artifact` definition (line 407-408) to:
 
@@ -379,7 +379,7 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_
 
 and update the two dispatch calls (lines 421 and 424) from `bind_groupwise_text_layers(binder, out, residency)` to `bind_groupwise_text_layers(binder, out, residency, resident_ffn_layers)` and `bind_nvfp4_text_layers(binder, out, residency, resident_ffn_layers)`.
 
-- [ ] **Step 6: bindings.cpp — LoadedModelData offload probe + stage_mlp gate**
+- [x] **Step 6: bindings.cpp — LoadedModelData offload probe + stage_mlp gate**
 
 Replace the offload probe (lines 492-493):
 
@@ -398,7 +398,7 @@ In the `stage_mlp` lambda (line 515-531), immediately after `if (!offload) { ret
 
 This is the single enforcement point that resident layers (host == nullptr) are never re-pointed and never enter the slot map. (`std::any_of` needs `<algorithm>`, already included.)
 
-- [ ] **Step 7: package.cpp plan_load passes the knob**
+- [x] **Step 7: package.cpp plan_load passes the knob**
 
 In `src/targets/qwen3_6_27b/impl/package.cpp` `plan_load` (lines 99-107), change the `bind_artifact` call to:
 
@@ -409,7 +409,7 @@ In `src/targets/qwen3_6_27b/impl/package.cpp` `plan_load` (lines 99-107), change
                                                options.resident_ffn_layers)));
 ```
 
-- [ ] **Step 8: Build and run the gate**
+- [x] **Step 8: Build and run the gate**
 
 Run: `cmake --build build`
 
@@ -419,7 +419,7 @@ Expected: **7/7 PASS** — residency (~9 s), engine offload (~15 s), artifact_re
 
 > **Note for the implementer:** the MTP arm exercises graph capture + replay of the MTP schedule with the staged FFN copies for the first time. If it fails, it is a genuine offload-speculative integration bug — diagnose and fix in this branch, then re-run. (Known risk in the design spec §8.)
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add include/ninfer/types.h src/targets/qwen3_6_27b/impl/load/bindings.h src/targets/qwen3_6_27b/impl/load/bindings.cpp src/targets/qwen3_6_27b/impl/package.cpp
@@ -438,7 +438,7 @@ git commit -m "feat(engine): add the partial FFN residency knob"
 - Modify: `src/serve/serve_options.cpp`
 - Modify: `src/serve/generation_service.cpp`
 
-- [ ] **Step 1: CLI Options field**
+- [x] **Step 1: CLI Options field**
 
 In `apps/cli/options.h`, in `struct Options`, immediately after `ninfer::WeightResidency weight_residency = ninfer::WeightResidency::AllResident;` (line 27), insert:
 
@@ -446,7 +446,7 @@ In `apps/cli/options.h`, in `struct Options`, immediately after `ninfer::WeightR
     std::uint32_t resident_ffn_layers = 0;
 ```
 
-- [ ] **Step 2: CLI parse + usage**
+- [x] **Step 2: CLI parse + usage**
 
 In `apps/cli/options.cpp`, immediately after the `--weight-residency` parse branch (line 140-142), insert:
 
@@ -462,7 +462,7 @@ Extend the usage line (line 86) to:
            "       [--kv-dtype bf16|int8] [--weight-residency all|ffn] [--n-ffn-layers N] [--spec mtp|dflash --draft-tokens N]\n"
 ```
 
-- [ ] **Step 3: CLI main mapping**
+- [x] **Step 3: CLI main mapping**
 
 In `apps/cli/main.cpp`, immediately after `engine_options.weight_residency = cli.weight_residency;` (line 270), insert:
 
@@ -470,7 +470,7 @@ In `apps/cli/main.cpp`, immediately after `engine_options.weight_residency = cli
         engine_options.resident_ffn_layers = cli.resident_ffn_layers;
 ```
 
-- [ ] **Step 4: serve Options field**
+- [x] **Step 4: serve Options field**
 
 In `src/serve/serve_options.h`, immediately after `WeightResidency weight_residency       = WeightResidency::AllResident;` (line 41), insert:
 
@@ -478,7 +478,7 @@ In `src/serve/serve_options.h`, immediately after `WeightResidency weight_reside
     std::uint32_t resident_ffn_layers  = 0;
 ```
 
-- [ ] **Step 5: serve parse + usage**
+- [x] **Step 5: serve parse + usage**
 
 In `src/serve/serve_options.cpp`, immediately after the `--weight-residency` parse branch (`options.weight_residency = parse_weight_residency(require_value("--weight-residency"));`), insert:
 
@@ -491,7 +491,7 @@ In `src/serve/serve_options.cpp`, immediately after the `--weight-residency` par
 
 Extend the usage line (line 79) to add `[--n-ffn-layers N]` after `[--weight-residency all|ffn]`.
 
-- [ ] **Step 6: serve EngineOptions mapping**
+- [x] **Step 6: serve EngineOptions mapping**
 
 In `src/serve/generation_service.cpp`, immediately after `engine_options.weight_residency    = options_.weight_residency;` (line 262), insert:
 
@@ -499,7 +499,7 @@ In `src/serve/generation_service.cpp`, immediately after `engine_options.weight_
     engine_options.resident_ffn_layers = options_.resident_ffn_layers;
 ```
 
-- [ ] **Step 7: Build and smoke-test**
+- [x] **Step 7: Build and smoke-test**
 
 Run: `cmake --build build --target ninfer ninfer-serve`
 
@@ -513,7 +513,7 @@ Also run: `./build/apps/ninfer $HOME/llm-models/qwen3_8_27b.ninfer --weight-resi
 
 Run serve smoke: `./build/apps/ninfer-serve $HOME/llm-models/qwen3_8_27b.ninfer --weight-residency ffn --n-ffn-layers 41 --host 127.0.0.1 --port 18081 --max-context 4096 --kv-capacity 4096 2>&1 | grep -E "weights|listening"` then kill; expected `weights` line shows reduced device-resident size and server listens.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add apps/cli/options.h apps/cli/options.cpp apps/cli/main.cpp src/serve/serve_options.h src/serve/serve_options.cpp src/serve/generation_service.cpp
@@ -530,7 +530,7 @@ git commit -m "feat(cli): add the partial FFN residency knob to CLI and serve"
 - Modify: `docs/serving.md`
 - Modify: `README.md`
 
-- [ ] **Step 1: weight-offload.md**
+- [x] **Step 1: weight-offload.md**
 
 In `docs/maintainer/weight-offload.md`:
 
@@ -560,7 +560,7 @@ staging copy and their payloads stay in the backing weights arena.
  end-to-end.
 ```
 
-- [ ] **Step 2: cli.md and serving.md option rows**
+- [x] **Step 2: cli.md and serving.md option rows**
 
 In `docs/cli.md`, immediately after the `--weight-residency all\|ffn` row (line 141), insert:
 
@@ -570,19 +570,19 @@ In `docs/cli.md`, immediately after the `--weight-residency all\|ffn` row (line 
 
 In `docs/serving.md`, immediately after the `--weight-residency all\|ffn` row (~line 434), insert the same row.
 
-- [ ] **Step 3: README note**
+- [x] **Step 3: README note**
 
 In `README.md`, in the "Current limits" offload bullet (added by `f732c97`, ~line 301-306), extend the sentence describing `--weight-residency ffn` with: `A partial-residency knob (`--n-ffn-layers N`) keeps the first N FFN layers resident to trade VRAM against throughput.`
 
-- [ ] **Step 4: plan checkboxes**
+- [x] **Step 4: plan checkboxes**
 
 Mark every `- [ ]` task checkbox in this file as `- [x]`.
 
-- [ ] **Step 5: verify**
+- [x] **Step 5: verify**
 
 Run: `git diff --check` (silent expected). Confirm only the four docs files changed.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/maintainer/weight-offload.md docs/cli.md docs/serving.md README.md docs/superpowers/plans/2026-08-15-ffn-residency-knob.md
