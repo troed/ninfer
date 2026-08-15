@@ -23,6 +23,11 @@ enum class KvCacheStorage : std::uint8_t {
     Int8Group64,
 };
 
+enum class WeightResidency : std::uint8_t {
+    AllResident,
+    FfnOffload,
+};
+
 enum class KvCapacityMode : std::uint8_t {
     Explicit,
     Automatic,
@@ -77,6 +82,7 @@ struct EngineOptions {
     std::uint32_t pending_timeout_ms   = 30000;
     std::uint32_t prefill_chunk        = 1024;
     KvCacheStorage kv_cache            = KvCacheStorage::BFloat16;
+    WeightResidency weight_residency   = WeightResidency::AllResident;
     SpeculativeOptions speculative;
     bool enable_vision  = false;
     bool use_cuda_graph = true;
@@ -392,6 +398,8 @@ struct MemorySummary {
     ArenaMemorySummary weights;
     ArenaMemorySummary sequence;
     ArenaMemorySummary workspace;
+    ArenaMemorySummary staging;
+    std::size_t host_store_bytes = 0;
     ArenaMemorySummary request_transient;
     std::size_t minimum_runtime_reservation_bytes = 0;
     std::size_t kv_capacity_increment_bytes       = 0;
@@ -431,6 +439,8 @@ struct LoadSummary {
     std::uint64_t artifact_bytes_read  = 0;
     std::uint64_t host_to_device_bytes = 0;
     std::uint64_t peak_staging_bytes   = 0;
+    std::uint64_t host_bytes           = 0;
+    std::uint64_t host_capacity_bytes  = 0;
     std::size_t tensor_count           = 0;
     std::size_t resource_count         = 0;
 };
