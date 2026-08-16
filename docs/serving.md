@@ -458,7 +458,7 @@ curl http://127.0.0.1:8080/v1/models \
 | `--request-log-jsonl FILE` | append full-precision server/request records | disabled |
 | `--response-store-max-records N` | maximum locally retained Responses objects | `1024` |
 | `--response-store-max-mib N` | total local Response envelope/Item/context budget | `256` |
-| `--kv-dtype bf16\|int8` | KV-cache storage | `bf16` |
+| `--kv-dtype bf16\|int8\|fp6` | KV-cache storage | `bf16` |
 | `--weight-residency all\|ffn` | offload the per-layer FFN/SwiGLU matrices to pinned host memory and stream them through the fixed staging arena during decode; required to serve 27B dense identities on GPUs with less VRAM than the resident weights | `all` |
 | `--n-ffn-layers N` | when combined with `--weight-residency ffn`, keep the first N FFN text layers device-resident and stream layers N..63 from pinned host memory; tune the VRAM/throughput tradeoff (default `0` = all FFN layers stream) | `0` |
 | `--spec mtp\|dflash` | speculative backend | off |

@@ -494,3 +494,26 @@ At 96,000 tokens the INT8 group-64 KV cache costs about 3.21 GiB of device memor
 context requires 36 of 64 FFN layers to stream; the 41-resident configuration tops out near
 61,000 tokens of KV capacity on this card. These numbers are for reference against smaller-VRAM
 deployments and are not part of the RTX 5090 published campaign above.
+
+## Packed FP6 KV storage
+
+`--kv-dtype fp6` is a runtime kv-dtype orthogonal to weight quantization and available for every
+registered identity. It packs group-64 FP6 (E3M2) KV into a sub-byte code plane and roughly halves
+the INT8-G64 footprint. Measured at 96,000 tokens:
+
+| KV format | bytes/token/head | 27B per-token layer-set | 96,000-token payload |
+|---|---:|---:|---:|
+| BF16 | 512 | 65,536 B | ~6.4 GiB |
+| INT8-G64 | 264 | 33,792 B | 3.21 GiB |
+| FP6-G64 | 200 | 25,600 B | 2.29 GiB |
+
+FP6-G64 is 0.7576× the INT8-G64 footprint and 0.3906× the BF16 footprint. Each 256-dim token/head
+holds a 192-byte code plane of LSB-first 6-bit codes (1 sign + 3 exp + 2 mantissa, bias 3, max
+finite 14.0) plus an 8-byte FP16 per-group-64 scale plane. The codec has finer near-zero resolution
+than INT8 at slightly higher compute cost; the host-oracle qualification for the format lives in
+`tests/ops/test_kv_fp6.cpp`. DFlash speculative KV remains BF16 in this work package, so FP6 applies
+to the Main Text and MTP growing pools only.
+
+At the same 96,000 tokens, FP6 frees roughly 0.9 GiB relative to INT8 (2.29 vs 3.21 GiB), leaving
+more device memory for resident FFN layers or a longer context on smaller-VRAM cards. This is
+footprint arithmetic from the table above, not a separately measured throughput result.
