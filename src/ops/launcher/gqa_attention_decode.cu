@@ -124,8 +124,10 @@ void launch_tc_partial_fp6(const Tensor& q, CacheInput input, const Tensor& pos,
     Tensor& cache_v       = cache.v_pages;
     Tensor& cache_k_scale = cache.k_scale_pages;
     Tensor& cache_v_scale = cache.v_scale_pages;
-    // The packed/scale arenas put the per-block total over the 48 KiB default
-    // opt-in threshold, so the kernel must opt in to the sm_120a dynamic-smem cap.
+    // The packed/scale arenas push the Wc=4 per-block total to 50816 B, over the
+    // 49152 B (48 KiB) default dynamic-smem opt-in threshold (Wc=2 is 48320 B,
+    // under it), so the kernel must opt in to the sm_120a dynamic-smem cap. The
+    // unconditional setAttribute below covers both instantiations.
     static const cudaError_t attr = cudaFuncSetAttribute(
         gqa_attention_decode_fp6_tiled_kernel<Geometry, TokenTile, WarpsPerCta, MultiBatch, Masked,
                                               CacheInput>,

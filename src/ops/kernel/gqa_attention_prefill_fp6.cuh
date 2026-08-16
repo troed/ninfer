@@ -250,25 +250,6 @@ __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_fp6_page_kerne
 // fidelity to the BF16 kernel; the prologue's Q staging drains through the
 // iteration-0 cp_wait<0>() regardless.
 
-// Dequantize one 8-dim FP6 d-block into 8 bf16 packed as an int4, preserving dim
-// order for the ldmatrix consumers: unpack the six code bytes (byte-wise, safe at
-// any alignment), decode each code, and scale by the group's stored FP16 scale.
-__device__ __forceinline__ int4 gqa_kv_fp6_dequant_dblock8(const std::uint8_t* packed,
-                                                           __half scale) {
-    std::uint8_t codes[8];
-    gqa_kv_fp6_unpack8(packed, codes);
-    const float s = __half2float(scale);
-    unsigned out[4];
-#pragma unroll
-    for (int j = 0; j < 8; j += 2) {
-        const float x0 = gqa_kv_fp6_decode(codes[j]) * s;
-        const float x1 = gqa_kv_fp6_decode(codes[j + 1]) * s;
-        out[j >> 1]    = pack_bf16x2(x0, x1);
-    }
-    return make_int4(static_cast<int>(out[0]), static_cast<int>(out[1]), static_cast<int>(out[2]),
-                     static_cast<int>(out[3]));
-}
-
 // Stage one [Bc, D] K or V tile into the swizzled bf16 smem buffer by dequantizing
 // the packed FP6 plane straight from the cache. 64 rows x 32 d-blocks = 2048 items
 // over 128 threads; each item decodes one 8-dim block (six code bytes) with its

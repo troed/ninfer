@@ -23,6 +23,8 @@
 // src/ops/wrapper/gqa_attention.cpp::code_leading_extent, which derives the
 // code-plane extent as (kHeadDim * 6) / 8.
 
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cmath>
@@ -151,6 +153,29 @@ __host__ __device__ __forceinline__ void gqa_kv_fp6_unpack8(const std::uint8_t* 
     codes[5] = static_cast<std::uint8_t>((raw >> 30) & 0x3Fu);
     codes[6] = static_cast<std::uint8_t>((raw >> 36) & 0x3Fu);
     codes[7] = static_cast<std::uint8_t>((raw >> 42) & 0x3Fu);
+}
+
+// Dequantize one 8-dim FP6 d-block into 8 bf16 packed as an int4, preserving dim
+// order for the ldmatrix consumers: unpack the six code bytes (byte-wise, safe at
+// any alignment), decode each code, and scale by the group's stored FP16 scale.
+// The bf16x2 pack is __floats2bfloat162_rn, which lowers to the same single
+// cvt.rn.bf16x2.f32 instruction as the kernels' device-only pack_bf16x2 on
+// sm_80+ (bit-identical), and stays host-compilable for the oracle test.
+__host__ __device__ __forceinline__ int4 gqa_kv_fp6_dequant_dblock8(const std::uint8_t* packed,
+                                                                    __half scale) {
+    std::uint8_t codes[8];
+    gqa_kv_fp6_unpack8(packed, codes);
+    const float s = __half2float(scale);
+    unsigned out[4];
+#pragma unroll
+    for (int j = 0; j < 8; j += 2) {
+        const float x0 = gqa_kv_fp6_decode(codes[j]) * s;
+        const float x1 = gqa_kv_fp6_decode(codes[j + 1]) * s;
+        const __nv_bfloat162 pair = __floats2bfloat162_rn(x0, x1);
+        out[j >> 1]               = __BFLOAT162_TO_CUI(pair);
+    }
+    return make_int4(static_cast<int>(out[0]), static_cast<int>(out[1]), static_cast<int>(out[2]),
+                     static_cast<int>(out[3]));
 }
 
 } // namespace ninfer::ops

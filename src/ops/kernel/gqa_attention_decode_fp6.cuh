@@ -15,10 +15,10 @@
 //       (from_new) rows are staged as bf16 directly from input, exactly like the
 //       BF16 kernel; everything else is read from the packed cache.
 //
-// The dynamic arenas (2 * Bc * 192 packed bytes + 2 * Bc * 4 group scales) keep
-// the total per-block smem at ~50 KiB for the Wc=4 instantiation, under the
-// sm_120/sm_120a opt-in cap of 101376 B; the launcher opts in via
-// cudaFuncSetAttribute (the 48 KiB default opt-in threshold is exceeded).
+// The dynamic arenas (2 * Bc * 192 packed bytes + 2 * Bc * 4 group scales) push
+// the Wc=4 per-block total to 50816 B, over the 49152 B (48 KiB) default opt-in
+// threshold (Wc=2 is 48320 B, under it), so the launcher opts in to the
+// sm_120/sm_120a dynamic-smem cap of 101376 B via cudaFuncSetAttribute.
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -36,27 +36,6 @@ inline constexpr int kGqaDecodeFp6KeyBlock = 32;
 inline constexpr std::size_t kGqaDecodeFp6DynamicSmemBytes =
     2 * kGqaDecodeFp6KeyBlock * kGqaKvFp6LeadingExtent +
     2 * kGqaDecodeFp6KeyBlock * kGqaKvQuantGroups * sizeof(__half);
-
-// Dequantize one 8-dim FP6 d-block into 8 bf16 packed as an int4, preserving dim
-// order for the ldmatrix consumers: unpack the six code bytes (byte-wise, safe at
-// any alignment), decode each code, and scale by the group's stored FP16 scale.
-// Same math as the prefill's gqa_kv_fp6_dequant_dblock8, kept local so the decode
-// header owns its staging helpers.
-__device__ __forceinline__ int4 gqa_decode_fp6_dequant_dblock8(const std::uint8_t* packed,
-                                                               __half scale) {
-    std::uint8_t codes[8];
-    gqa_kv_fp6_unpack8(packed, codes);
-    const float s = __half2float(scale);
-    unsigned out[4];
-#pragma unroll
-    for (int j = 0; j < 8; j += 2) {
-        const float x0 = gqa_kv_fp6_decode(codes[j]) * s;
-        const float x1 = gqa_kv_fp6_decode(codes[j + 1]) * s;
-        out[j >> 1]    = pack_bf16x2(x0, x1);
-    }
-    return make_int4(static_cast<int>(out[0]), static_cast<int>(out[1]), static_cast<int>(out[2]),
-                     static_cast<int>(out[3]));
-}
 
 // Dequant one [Bc, D] K or V tile from the packed/scale smem arenas into the
 // swizzled bf16 tile. from_new rows are skipped (they were staged as bf16 from
@@ -88,7 +67,7 @@ __device__ __forceinline__ void gqa_decode_stage_fp6_kv(__nv_bfloat16* dst,
             }
             if (from_new) { continue; }
             const int grp = dblock / kGqaKvFp6BlockDims;
-            store_vec(p, gqa_decode_fp6_dequant_dblock8(
+            store_vec(p, gqa_kv_fp6_dequant_dblock8(
                              packed + key_l * kGqaKvFp6LeadingExtent +
                                  dblock * kGqaKvFp6BlockBytes,
                              scale[key_l * kGqaKvQuantGroups + grp]));
@@ -280,7 +259,7 @@ __launch_bounds__(WarpsPerCta * 32, 2) __global__ void gqa_attention_decode_fp6_
                 static_cast<std::uint8_t>(gqa_kv_fp6_encode(v1, v_inv) & 0x3Fu);
             __syncthreads();
             std::uint8_t* packed = &append_packed_s[warp * 2 * 48];
-            if (lane < 8) {
+            if (active && lane < 8) {
                 std::uint8_t block[8];
                 for (int j = 0; j < 8; ++j) { block[j] = codes[lane * 8 + j]; }
                 gqa_kv_fp6_pack8(block, packed + lane * 6);
@@ -410,6 +389,7 @@ __launch_bounds__(WarpsPerCta * 32, 2) __global__ void gqa_attention_decode_fp6_
                 }
             }
             if constexpr (CacheInput::writes_cache) {
+#pragma unroll 1
                 for (int chunk = tid; chunk < Bc * (D / 8); chunk += Threads) {
                     const int key_l = chunk / (D / 8);
                     const int d     = (chunk - key_l * (D / 8)) * 8;
