@@ -11,7 +11,6 @@
 #include <cstdio>
 #include <limits>
 #include <random>
-#include <vector>
 
 #include "ops/kernel/gqa_attention_kv_fp6.cuh"
 
@@ -21,13 +20,14 @@ namespace {
 
 int g_failures = 0;
 
-#define CHECK(cond, ...)                                           \
-    do {                                                           \
-        if (!(cond)) {                                             \
-            ++g_failures;                                          \
-            std::printf("  fail: " __VA_ARGS__);                   \
-            std::printf("\n");                                     \
-        }                                                          \
+#define CHECK(cond, ...)                                                        \
+    do {                                                                        \
+        if (!(cond)) {                                                          \
+            ++g_failures;                                                       \
+            std::fprintf(stderr, "%s:%d: fail: ", __FILE__, __LINE__);          \
+            std::fprintf(stderr, __VA_ARGS__);                                  \
+            std::fprintf(stderr, "\n");                                         \
+        }                                                                       \
     } while (0)
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,10 @@ double reference_decode(std::uint32_t code) {
 
 // Nearest of the 28 magnitude codes (exp 0..6 x mant 0..3) to v in [0, 14),
 // ties broken toward even mantissa. Scans only reference_value(); it does NOT
-// call gqa_kv_fp6_nearest_magnitude or gqa_kv_fp6_decode.
+// call gqa_kv_fp6_nearest_magnitude or gqa_kv_fp6_decode. The tie idiom mirrors
+// the codec by design; its direction is independently pinned by the midpoint
+// assertions in test_encode_oracle_parity, which assert "even mantissa wins"
+// directly from the reference magnitudes with no scan loop.
 std::uint32_t oracle_nearest_magnitude(double v) {
     std::uint32_t best     = 0;
     double        best_err = std::numeric_limits<double>::infinity();
@@ -68,20 +71,17 @@ std::uint32_t oracle_nearest_magnitude(double v) {
     return best;
 }
 
-bool close(double got, double expected, double rel) {
-    return std::fabs(got - expected) <= rel * (std::fabs(expected) + 1.0);
-}
-
 // ---------------------------------------------------------------------------
 // 1. decode_all_codes
 // ---------------------------------------------------------------------------
 
 void test_decode_all_codes() {
+    // All 64 E3M2 values are dyadic and exactly representable in float, so the
+    // comparison is exact, not tolerance-based.
     for (std::uint32_t code = 0; code < 64; ++code) {
         const double expected = reference_decode(code);
         const double got      = static_cast<double>(gqa_kv_fp6_decode(code));
-        CHECK(close(got, expected, 1e-6), "decode(0x%02X) = %.17g, oracle %.17g", code, got,
-              expected);
+        CHECK(got == expected, "decode(0x%02X) = %.17g, oracle %.17g", code, got, expected);
     }
 
     const float pz = gqa_kv_fp6_decode(0x00u);
@@ -117,19 +117,23 @@ void test_encode_oracle_parity() {
         }
     }
 
-    // The 27 exact midpoints between adjacent magnitudes (ties to even mantissa).
-    // The 28 magnitude codes are enumerated e*4+m in monotone order, so code
-    // indices c and c+1 are adjacent magnitudes.
+    // The 27 exact midpoints between adjacent magnitudes pin the RNE tie rule
+    // independently. A tie can only occur between two ADJACENT magnitudes
+    // (codes c and c+1, which always alternate mantissa parity), so the
+    // contract rule collapses to "even mantissa wins" -- asserted here directly
+    // from the reference magnitudes, with no scan loop involved. The 28
+    // magnitude codes are enumerated e*4+m in monotone order, so code indices
+    // c and c+1 are adjacent magnitudes.
     for (int c = 0; c < 27; ++c) {
         const int    e1  = c >> 2, m1 = c & 3;
         const int    e2  = (c + 1) >> 2, m2 = (c + 1) & 3;
         const double lo  = reference_value(0, e1, m1);
         const double hi  = reference_value(0, e2, m2);
         const double mid = (lo + hi) / 2.0;
-        const std::uint32_t expected = oracle_nearest_magnitude(mid);
+        const std::uint32_t expected = static_cast<std::uint32_t>((m1 & 1) == 0 ? c : c + 1);
         const std::uint32_t got      = gqa_kv_fp6_encode(static_cast<float>(mid), 1.0f);
-        CHECK(got == expected, "encode(%g, 1.0f) at midpoint = 0x%02X, oracle 0x%02X", mid, got,
-              expected);
+        CHECK(got == expected, "encode(%g, 1.0f) at midpoint = 0x%02X, expected even-mantissa 0x%02X",
+              mid, got, expected);
     }
 
     // A few values just below 14: nearest code is max finite 0x1B.
@@ -147,6 +151,15 @@ void test_encode_oracle_parity() {
 // ---------------------------------------------------------------------------
 
 void test_encode_scale_path() {
+    // Zero inv_scale short-circuits before the multiply, so it is scale- and
+    // x-independent: checked once here.
+    CHECK(gqa_kv_fp6_encode(2.5f, 0.0f) == 0, "encode(x, 0.0f) should be code 0");
+    // Documented edge inputs: -0.0 and NaN must encode to code 0 (the -0 code
+    // 0x20 is never emitted).
+    CHECK(gqa_kv_fp6_encode(-0.0f, 1.0f) == 0, "encode(-0.0f, 1.0f) should be code 0");
+    CHECK(gqa_kv_fp6_encode(std::numeric_limits<float>::quiet_NaN(), 1.0f) == 0,
+          "encode(NaN, 1.0f) should be code 0");
+
     std::mt19937 rng(0x6B6Bu);
     std::uniform_real_distribution<float> draw_x(-14.0f, 14.0f);
     std::uniform_real_distribution<float> draw_inv(0.01f, 10.0f);
@@ -157,9 +170,6 @@ void test_encode_scale_path() {
         const double w         = static_cast<double>(x) * static_cast<double>(inv_scale);
         const std::uint32_t code    = gqa_kv_fp6_encode(x, inv_scale);
         const double        decoded = static_cast<double>(gqa_kv_fp6_decode(code));
-
-        CHECK(gqa_kv_fp6_encode(x, 0.0f) == 0, "encode(%g, 0.0f) should be code 0",
-              static_cast<double>(x));
 
         if (std::fabs(w) >= 14.0) {
             // Clamp region: the code must be the signed max-finite code and the
@@ -172,11 +182,11 @@ void test_encode_scale_path() {
             CHECK(decoded == (w < 0.0 ? -14.0 : 14.0), "clamped decode should be +/-14.0");
         } else {
             const double mag = std::fabs(w);
-            // The FP6 lattice is logarithmic, not uniform: 1.5*(14/56) (= 0.375
-            // scaled units) covers only the fine band (|w| <= 4.0, where the
-            // half-step is at most 0.25). In the coarse band a code step is up
-            // to 2.0 wide, so the error there is bounded by the largest local
-            // half-step (1.0) in the linear region.
+            // The FP6 lattice is logarithmic, not uniform: the fine-band limit
+            // below is 1.5 x the max fine-band half-step (0.25, in the exp-4
+            // region |w| <= 4.0), i.e. 0.375 scaled units. In the coarse band a
+            // code step is up to 2.0 wide, so the error there is bounded by the
+            // largest local half-step (1.0) in the linear region.
             if (mag <= 4.0) {
                 const double limit = 1.5 * (14.0 / 56.0) / static_cast<double>(inv_scale) + 1e-6;
                 const double err   = std::fabs(decoded / static_cast<double>(inv_scale) - x);
@@ -200,6 +210,10 @@ void test_clamp_boundary() {
     CHECK(gqa_kv_fp6_encode(-14.0f, 1.0f) == 0x3Bu, "encode(-14, 1.0f) should be -max finite");
     CHECK(gqa_kv_fp6_encode(100.0f, 1.0f) == 0x1Bu, "encode(100, 1.0f) should be max finite");
     CHECK(gqa_kv_fp6_encode(-100.0f, 1.0f) == 0x3Bu, "encode(-100, 1.0f) should be -max finite");
+    CHECK(gqa_kv_fp6_encode(std::numeric_limits<float>::infinity(), 1.0f) == 0x1Bu,
+          "encode(+inf, 1.0f) should be max finite");
+    CHECK(gqa_kv_fp6_encode(-std::numeric_limits<float>::infinity(), 1.0f) == 0x3Bu,
+          "encode(-inf, 1.0f) should be -max finite");
     // Non-identity scale: the product still saturates when it exceeds 14.
     CHECK(gqa_kv_fp6_encode(30.0f, 0.5f) == 0x1Bu, "encode(30, 0.5f) should be max finite");
     CHECK(gqa_kv_fp6_encode(-30.0f, 0.5f) == 0x3Bu, "encode(-30, 0.5f) should be -max finite");
@@ -261,6 +275,19 @@ void test_pack_bit_layout() {
             CHECK(got == static_cast<std::uint64_t>(rc[j]), "set %d: code %d not at bit %d", i, j,
                   6 * j);
         }
+    }
+
+    // pack8 masks out-of-range codes to 6 bits so a neighbor's bits are never
+    // corrupted: code 3 = 0x7F (> 63) must unpack as its low 6 bits 0x3F and
+    // leave codes 2 and 4 untouched.
+    {
+        std::uint8_t rc[8] = {1, 2, 3, 0x7F, 5, 6, 7, 8};
+        std::uint8_t rec[8] = {};
+        gqa_kv_fp6_pack8(rc, out);
+        gqa_kv_fp6_unpack8(out, rec);
+        bool ok = true;
+        for (int j = 0; j < 8; ++j) { ok = ok && rec[j] == (j == 3 ? 0x3Fu : rc[j]); }
+        CHECK(ok, "pack8 must mask 0x7F to 0x3F without corrupting neighbor codes");
     }
 }
 
