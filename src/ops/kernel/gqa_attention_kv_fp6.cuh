@@ -89,7 +89,7 @@ __host__ __device__ __forceinline__ std::uint32_t gqa_kv_fp6_encode(float x, flo
     const float   mag = fabsf(v);
     std::uint32_t code;
     if (mag >= 14.0f) {
-        code = 0x1Fu;  // exp 7, mant 3: decode clamps this inf/nan pattern to 14.0 (max finite)
+        code = 0x1Bu;  // exp 6, mant 3 = max finite (14.0)
     } else {
         code = gqa_kv_fp6_nearest_magnitude(mag);
     }
