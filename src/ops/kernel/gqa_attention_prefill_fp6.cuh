@@ -6,7 +6,7 @@
 // unit with two dimensions per lane (d0 = group*64 + lane, d1 = d0 + 32). The codec
 // stage is the difference: each warp encodes its 64 values, stages the six-bit codes
 // in its private shared slice, cooperatively packs eight 8-code blocks to six bytes
-// each, and writes the 48 packed bytes as twelve int4 stores. token_base is provably
+// each, and writes the 48 packed bytes as three int4 stores. token_base is provably
 // 16-aligned (256-byte plane alignment, 192-byte token stride, and 48-byte group
 // stride are all divisible by 16) and each warp's packed slice is 16-aligned, so the
 // typed stores are safe on device. Staging is per-warp because all eight warps reach
@@ -97,7 +97,7 @@ __launch_bounds__(256) __global__
         gqa_kv_fp6_pack8(block, packed + lane * 6);
     }
     __syncthreads();
-    if (active && lane < 12) {
+    if (active && lane < 3) {
         reinterpret_cast<int4*>(cache_k + token_base)[lane] =
             reinterpret_cast<const int4*>(packed)[lane];
     }
@@ -122,7 +122,7 @@ __launch_bounds__(256) __global__
         gqa_kv_fp6_pack8(block, packed + lane * 6);
     }
     __syncthreads();
-    if (active && lane < 12) {
+    if (active && lane < 3) {
         reinterpret_cast<int4*>(cache_v + token_base)[lane] =
             reinterpret_cast<const int4*>(packed)[lane];
     }
@@ -205,7 +205,7 @@ __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_fp6_page_kerne
         gqa_kv_fp6_pack8(block, packed + lane * 6);
     }
     __syncthreads();
-    if (valid && lane < 12) {
+    if (valid && lane < 3) {
         reinterpret_cast<int4*>(cache_k + token_base)[lane] =
             reinterpret_cast<const int4*>(packed)[lane];
     }
@@ -234,7 +234,7 @@ __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_fp6_page_kerne
         gqa_kv_fp6_pack8(block, packed + lane * 6);
     }
     __syncthreads();
-    if (valid && lane < 12) {
+    if (valid && lane < 3) {
         reinterpret_cast<int4*>(cache_v + token_base)[lane] =
             reinterpret_cast<const int4*>(packed)[lane];
     }
