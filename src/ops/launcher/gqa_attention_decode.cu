@@ -4,6 +4,7 @@
 #include "ops/common/math.h"
 #include "ops/kernel/gqa_attention_decode.cuh"
 #include "ops/kernel/gqa_attention_decode_bf16.cuh"
+#include "ops/kernel/gqa_attention_decode_fp6.cuh"
 #include "ops/kernel/gqa_attention_decode_i8.cuh"
 #include "core/device.h" // CUDA_CHECK
 #include "ninfer/ops/gqa_attention.h"
@@ -108,6 +109,48 @@ void launch_tc_partial_bf16(const Tensor& q, CacheInput input, const Tensor& pos
         cache.block_tables.ne[0], invocation.width, invocation.full_width, invocation.column_begin,
         logical_capacity, scale, static_cast<__nv_bfloat16*>(partial_acc.data),
         static_cast<float*>(partial_m.data), static_cast<float*>(partial_l.data));
+    CUDA_CHECK(cudaGetLastError());
+}
+
+template <typename Geometry, int TokenTile, int WarpsPerCta, bool MultiBatch, bool Masked,
+          typename CacheInput>
+void launch_tc_partial_fp6(const Tensor& q, CacheInput input, const Tensor& pos, float scale,
+                           PagedKVBatchLayerView cache, const GqaSmallTInvocation& invocation,
+                           std::int32_t logical_capacity, std::int32_t splits, Tensor& partial_acc,
+                           Tensor& partial_m, Tensor& partial_l, cudaStream_t stream) {
+    constexpr int kBlock = 32 * WarpsPerCta;
+    const dim3 grid(Geometry::KVHeads, splits, invocation.batch_size);
+    Tensor& cache_k       = cache.k_pages;
+    Tensor& cache_v       = cache.v_pages;
+    Tensor& cache_k_scale = cache.k_scale_pages;
+    Tensor& cache_v_scale = cache.v_scale_pages;
+    // The packed/scale arenas push the Wc=4 per-block total to 50816 B, over the
+    // 49152 B (48 KiB) default dynamic-smem opt-in threshold (Wc=2 is 48320 B,
+    // under it), so the kernel must opt in to the sm_120a dynamic-smem cap. The
+    // unconditional setAttribute below covers both instantiations.
+    static const cudaError_t attr = cudaFuncSetAttribute(
+        gqa_attention_decode_fp6_tiled_kernel<Geometry, TokenTile, WarpsPerCta, MultiBatch, Masked,
+                                              CacheInput>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        static_cast<int>(kGqaDecodeFp6DynamicSmemBytes));
+    CUDA_CHECK(attr);
+    gqa_attention_decode_fp6_tiled_kernel<Geometry, TokenTile, WarpsPerCta, MultiBatch, Masked,
+                                          CacheInput>
+        <<<grid, kBlock, static_cast<unsigned>(kGqaDecodeFp6DynamicSmemBytes), stream>>>(
+            static_cast<const __nv_bfloat16*>(q.data), input,
+            static_cast<const std::int32_t*>(pos.data), static_cast<std::uint8_t*>(cache_k.data),
+            static_cast<std::uint8_t*>(cache_v.data), static_cast<__half*>(cache_k_scale.data),
+            static_cast<__half*>(cache_v_scale.data),
+            static_cast<const std::int32_t*>(cache.block_tables.data),
+            invocation.valid_columns == nullptr
+                ? nullptr
+                : static_cast<const std::int32_t*>(invocation.valid_columns->data),
+            invocation.table_rows == nullptr
+                ? nullptr
+                : static_cast<const std::int32_t*>(invocation.table_rows->data),
+            cache.block_tables.ne[0], invocation.width, invocation.full_width, invocation.column_begin,
+            logical_capacity, scale, static_cast<__nv_bfloat16*>(partial_acc.data),
+            static_cast<float*>(partial_m.data), static_cast<float*>(partial_l.data));
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -219,7 +262,8 @@ bool gqa_attention_uses_small_t(std::int32_t tokens) { return tokens >= 1 && tok
 
 std::int32_t gqa_attention_split_capacity(std::int32_t q_heads, std::int32_t tokens,
                                           DType cache_dtype, GqaExecutionEnvelope envelope) {
-    if (tokens < 1 || tokens > 6 || (cache_dtype != DType::BF16 && cache_dtype != DType::I8) ||
+    if (tokens < 1 || tokens > 6 ||
+        (cache_dtype != DType::BF16 && cache_dtype != DType::I8 && cache_dtype != DType::U8) ||
         envelope.min_visible_keys == 0 || envelope.min_visible_keys > envelope.max_visible_keys) {
         throw std::invalid_argument("gqa_attention split capacity: invalid profile");
     }
@@ -253,6 +297,10 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
                 launch_tc_partial_i8<Geometry, (TOKENS), MultiBatch, Masked>(                      \
                     q, input, pos, scale, cache, invocation, logical_capacity,                     \
                     implementation_window, splits, partial_acc, partial_m, partial_l, stream);     \
+            } else if (cache.dtype == DType::U8) {                                                 \
+                launch_tc_partial_fp6<Geometry, (TOKENS), (WARPS), MultiBatch, Masked>(            \
+                    q, input, pos, scale, cache, invocation, logical_capacity, splits,             \
+                    partial_acc, partial_m, partial_l, stream);                                    \
             } else {                                                                               \
                 launch_tc_partial_bf16<Geometry, (TOKENS), (WARPS), MultiBatch, Masked>(           \
                     q, input, pos, scale, cache, invocation, logical_capacity, splits,             \

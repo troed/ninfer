@@ -140,7 +140,7 @@ measured recommendation rather than a semantic limit.
 | `--prefill-chunk N` | positive text-prefill chunk, in multiples of 128 | `1024` |
 | `--max-new N` | requested output-token limit | `128` |
 | `--device N` | CUDA device index | `0` |
-| `--kv-dtype bf16\|int8` | KV-cache storage | `bf16` |
+| `--kv-dtype bf16\|int8\|fp6` | KV-cache storage | `bf16` |
 | `--weight-residency all\|ffn` | offload the per-layer FFN/SwiGLU matrices to pinned host memory and stream them through the fixed staging arena during decode; required to load 27B dense identities on GPUs with less VRAM than the resident weights | `all` |
 | `--n-ffn-layers N` | when combined with `--weight-residency ffn`, keep the first N FFN text layers device-resident and stream layers N..63 from pinned host memory; tune the VRAM/throughput tradeoff (default `0` = all FFN layers stream) | `0` |
 | `--spec mtp\|dflash` | speculative backend | off |
@@ -187,6 +187,12 @@ allocation on one RTX 5090 depends on the selected artifact, media workload, out
 KV-cache type.
 Use `--kv-dtype int8` for large context allocations. The prepared prompt must fit
 `--max-context`; generation stops at the remaining context capacity when necessary.
+`--kv-dtype fp6` is a packed group-64 FP6 (E3M2) format: each 256-dim token/head keeps a 192-byte
+code plane of LSB-first 6-bit codes plus an 8-byte FP16 per-group-64 scale plane (200 B/token/head
+total, versus 264 for INT8-G64 and 512 for BF16), roughly a quarter smaller than the INT8 KV
+footprint (and about half the BF16 footprint) with finer near-zero resolution at slightly higher
+compute cost. It is a runtime kv-dtype orthogonal to weight
+quantization and applies to every registered identity; DFlash speculative KV remains BF16.
 `--kv-capacity N` controls the shared physical Main Text KV pool independently and is rounded up to
 the 64-token page size. `--kv-capacity auto` loads the selected weights, measures the remaining GPU
 memory, and directly chooses the largest legal page capacity for the complete enabled runtime

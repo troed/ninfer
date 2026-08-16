@@ -271,7 +271,7 @@ DFlash Full     [D, P, Nphysical, Hkv]  not used
 ```
 
 Main Text/MTP 使用 contiguous page-major order。对 element bytes `E` 和第一维 extent `X`（K/V/code
-为 `D`，scale 为 `D/64`）：
+为 `D`，INT8 scale 为 `D/64`；FP6 code plane 为 U8、extent `192`，scale 为 `D/64`）：
 
 ```text
 nb[0] = E
@@ -363,12 +363,43 @@ BF16 bytes/token
 INT8-G64 bytes/token
     = 2(K,V) * L * H * D
     + 2(K,V) * L * H * (D/64) * sizeof(FP16 scale)
+
+FP6-G64 bytes/token
+    = 2(K,V) * L * H * D * 6 / 8            (packed 6-bit code plane, U8)
+    + 2(K,V) * L * H * (D/64) * sizeof(FP16 scale)
 ```
+
+`D=256` 时 FP6-G64 的 code 项为 `2*L*H*192`，加上 scale 项 `2*L*H*8`，每 plane-layer-head
+合计 `200` bytes。
 
 一个 homogeneous pool 的 logical page-group payload 是其全部 grouped planes 的 bytes/token 之和乘以
 该 pool 的 `P`。Startup physical pool bytes 则由 registered plane storage spans 之和再加 slab/head
 alignment 得出；alignment 不改变 allocator 的 page-group ID 计数。不同 pools 的 page-group payload
 无需相等。
+
+### 4.6 Packed sub-byte FP6 code plane
+
+FP6-G64（`KvCacheStorage::Fp6Group64`）的 code plane 不是每 dim 一个 element，而是把每个 head 的
+256 个 dim 编码成 LSB-first 的 6-bit code（E3M2：1 sign + 3 exp + 2 mantissa，exponent bias 3，
+inf/nan clamp 到 max finite `14.0`）。code plane 使用 `DType::U8`，leading extent 为
+`192`（bytes/token，`256*6/8`）；scale plane 与 INT8-G64 相同，为 group-64 的 FP16
+（leading extent `D/64`，8 bytes/token）。group scale 为 `FP16_RNE(amax/14.0)`，解码值是
+`fp6_decode(code) * scale`；零 group 的 scale 为 0、全部 code 为 0。
+
+LSB-first bitstream 中，dim `d` 的 code 位于 bit `[6d, 6d+6)`，即 byte offset `(3d)>>2`、
+bit `(6d)&7`。一个 8-dim d-block（`d%8==0`）占 48 bits，位于 byte offset `(d/8)*6`；一个 64-dim
+group 正好 48 bytes，是 16 的倍数，保持 FP6 prefill fill kernel 的 int4 cache store 对齐。d-block
+offset 2-mod-4 处的 code 跨字节边界，typed 32/64-bit 访问在该偏移会触发 device abort，因此 code
+的 pack/unpack 一律 byte-wise（六次标量 byte load/store，任意对齐都安全），kernel 不得对该平面做
+类型化宽加载。
+
+codec 公式、packing 和 group scale 的独立参考实现在
+`src/ops/kernel/gqa_attention_kv_fp6.cuh`（每个 helper 都是 `__host__ __device__`，host oracle
+测试执行同一套 bit 数学）。`kGqaKvFp6LeadingExtent` 必须与
+`src/ops/wrapper/gqa_attention.cpp::code_leading_extent`（`(head_dim*6)/8`）保持同步。
+
+本 work package 中 DFlash Full pool 与 cyclic local KV 都保持 BF16；FP6 只用于 Main Text 与 MTP
+的 growing pools。
 
 ---
 
@@ -600,13 +631,20 @@ blocks；其 Full pool 使用 §4.3 的 head-major page-run order。两者保留
 |---|---|---:|---:|---:|
 | 27B Main Text | BF16 | 65536 | 4.0000 MiB | 3.9375 MiB |
 | 27B Main Text | INT8-G64 | 33792 | 2.0625 MiB | 2.0303 MiB |
+| 27B Main Text | FP6-G64 | 25600 | 1.5625 MiB | 1.5381 MiB |
 | 35B-A3B Main Text | BF16 | 20480 | 1.2500 MiB | 1.2305 MiB |
 | 35B-A3B Main Text | INT8-G64 | 10560 | 0.6445 MiB | 0.6345 MiB |
+| 35B-A3B Main Text | FP6-G64 | 8000 | 0.4883 MiB | 0.4807 MiB |
 | 27B MTP | BF16 | 4096 | 0.2500 MiB | 0.2461 MiB |
 | 27B MTP | INT8-G64 | 2112 | 0.1289 MiB | 0.1269 MiB |
+| 27B MTP | FP6-G64 | 1600 | 0.0977 MiB | 0.0961 MiB |
 | 35B-A3B MTP | BF16 | 2048 | 0.1250 MiB | 0.1230 MiB |
 | 35B-A3B MTP | INT8-G64 | 1056 | 0.0645 MiB | 0.0634 MiB |
+| 35B-A3B MTP | FP6-G64 | 800 | 0.0488 MiB | 0.0481 MiB |
 | 35B-A3B DFlash Full | BF16 | 4096 | 0.2500 MiB | 0.2461 MiB |
+
+FP6 的 bytes/token 由 §4.6 的 packed code plane（192 bytes/token/head）加 group-64 FP16 scale
+plane（8 bytes/token/head）构成；DFlash Full 在本 work package 中保持 BF16，不提供 FP6 行。
 
 27B Main Text BF16 的 4 MiB page group 分布在全部 full-attention planes。单层单个 K 或 V plane
 每个 page ID 对应的 aggregate bytes 为 128 KiB；35B-A3B Main Text BF16 对应 64 KiB。Consumer 始终
@@ -958,7 +996,7 @@ PagedKVLayerView
 ├── block_table       I32 Tensor [Nlogical]
 ├── head_dim          D
 ├── num_kv_heads      Hkv
-├── dtype             BF16 or I8
+├── dtype             BF16, I8, or U8 (FP6 packed code plane)
 └── quant_group       0 or 64
 ```
 
@@ -1065,7 +1103,7 @@ storage/view boundary。
 |---|---|---|
 | `gqa_attention` | writable `PagedKVBatchLayerView` + `table_rows[B]` | 为 `B` 条独立 sequences append valid K/V columns，并执行一次 ragged causal Attention |
 | `gqa_attention_cached` | read-only `PagedKVLayerView` | 只读已经 populated 的 paged cache |
-| `gqa_kv_append` | writable `PagedKVLayerView` | 写入全部 supplied rows，BF16 copy 或 INT8-G64 encode |
+| `gqa_kv_append` | writable `PagedKVLayerView` | 写入全部 supplied rows，BF16 copy、INT8-G64 或 FP6-G64 encode |
 | `kv_cache_append_prefix` growing entry | writable `PagedKVBatchLayerView` + counts/table rows | 只写每行 device count 选择的 exact prefix |
 | `bidirectional_gqa_attention` | read-only `PagedKVBatchLayerView` + table rows | batched 读取 DFlash Full pool；query K/V 仍是 transient Tensor |
 | `kv_cache_append_prefix` cyclic entry | batched `CyclicKVCacheLayerView` + lane selectors | DFlash local fixed window，不属于 growing pool |
@@ -1111,7 +1149,7 @@ Wrapper 必须验证：
 - physical page count、head geometry、dtype 和 optional scale planes 一致；
 - single view 的 block table 是 contiguous I32 `[Nlogical]`；batch view 的 table matrix 是 contiguous
   I32 `[Nlogical,C]`，row selectors 是 contiguous I32 `[B]`；
-- BF16 cache 不携带 scale planes，INT8-G64 cache 的 scale shape 和 strides 完整；
+- BF16 cache 不携带 scale planes，INT8-G64 / FP6-G64 cache 的 scale shape 和 strides 完整；
 - causal `max_visible_keys <= Nlogical*P`；
 - DFlash `max_context <= Nlogical*P`；
 - input/output Tensor domain 与当前 entry 的已注册 geometry 一致。
@@ -1183,6 +1221,10 @@ key block和dynamic shared-memory profile，但 split span必须以 page-compati
 
 Append/encode阶段应以至少 `(token, kv_head)` 为page-translation共享单位。四个64-d quant groups不能
 各自从global memory重复加载同一个 block-table entry。Codec公式和最终 code/scale bits不变。
+
+FP6-G64 使用同一 page-translation 顺序和四个 group 共享 page ID 的规则；code 平面是 packed U8，
+pack/unpack 必须按 §4.6 byte-wise 执行，dequant 在读到 code 与 FP16 scale 后按同一 group-64 公式
+解码。
 
 ### 17.4 Causal prefill and cached prompt route
 
@@ -1291,6 +1333,7 @@ positions和represented cache values计算结果，不复制production page trav
   继续；
 - BF16 append bit-exact；
 - INT8-G64 code和FP16 scale bits与独立codec oracle一致；
+- FP6-G64 packed code 和 FP16 scale bits 与独立 codec oracle 一致，覆盖 2-mod-4 d-block offset；
 - cached-only route不修改任意cache plane；
 - prefix append的count为0、page边界前后和full count；
 - rejected/provisional stale bytes不进入valid read domain；
@@ -1313,6 +1356,7 @@ positions和represented cache values计算结果，不复制production page trav
 |---|---:|
 | D256 BF16 | 64 KiB |
 | D256 INT8-G64 incl. scales | 33 KiB |
+| D256 FP6-G64 incl. scales | 25 KiB |
 | D128 BF16 | 32 KiB |
 
 因此page-table payload本身不是主要带宽成本。需要实测防止的是重复lookup、跨页vector load、TLB/cache
@@ -1336,7 +1380,7 @@ reference/candidate 成对交替测量，结合重复分布和绝对 latency；�
 
 性能证据覆盖实际 route，而不是所有参数的笛卡尔积：
 
-- 两个 exact target 的 BF16/INT8-G64 causal decode `B=1,2,4,8`、`T=1` 和代表性 verify small-T；
+- 两个 exact target 的 BF16/INT8-G64/FP6-G64 causal decode `B=1,2,4,8`、`T=1` 和代表性 verify small-T；
 - causal prefill/cached-only 的一个普通 chunk 和一个长 chunk，并包含 non-aligned prefix base；
 - standalone append 的 small-T 与一个 prefill-sized chunk；
 - DFlash full-context 的 `T=1` 和完整 proposal block，覆盖普通与长 context；
@@ -1418,8 +1462,9 @@ contiguous-KV reference 只记录当时的 `B=1` paging migration，不是当前
   `M` 不在 `[M_min,M_max]`，或 minimum/runtime reservation 无法容纳时即拒绝；
 - growing KV 使用 homogeneous pools、pool-local I32 page-group IDs 和 allocation-owned ordered mapping；
 - 全部 registered growing pools 的 page size 为 `P=64`；
-- Main Text/MTP 的 K/V 与 code planes 固定为 contiguous page-major `[D,P,Hkv,Nphysical]`，INT8-G64
-  scale planes 固定为 `[D/64,P,Hkv,Nphysical]`；DFlash Full K/V 固定为 contiguous head-major page-run
+- Main Text/MTP 的 K/V 与 code planes 固定为 contiguous page-major `[D,P,Hkv,Nphysical]`，FP6 code
+  plane 为 U8、`[192,P,Hkv,Nphysical]`，INT8-G64 / FP6-G64 scale planes 固定为
+  `[D/64,P,Hkv,Nphysical]`；DFlash Full K/V 固定为 contiguous head-major page-run
   `[D,P,Nphysical,Hkv]`；
 - exact strides 由 §4.2 对每个 homogeneous pool 唯一确定；request 和 runtime mode 不选择 order；
 - K/V/code/scale 及同 pool layers 共享一个 page-group ID 和一份 per-sequence block table；

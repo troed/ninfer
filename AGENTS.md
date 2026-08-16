@@ -312,6 +312,9 @@ These are conventional project resources, not a checklist of resources every tas
 | profiler output | `profiles/ncu/`, `profiles/nsys/`, `profiles/bench/` |
 | hardware/toolchain | RTX 5090, `sm_120a`, CUDA 13.1 |
 
+Use the `jcodemunch` MCP server (search_symbols, get_symbol_source, get_repo_health,
+get_file_outline, and related queries) for repository retrieval in this project.
+
 Use the selected Python 3.11 interpreter explicitly. Do not install or upgrade dependencies unless
 the task requires it. Never select an artifact by glob, modification time, or an unqualified
 “latest” name. Large artifacts, source checkpoints, and profiler outputs are local prerequisites;
