@@ -242,10 +242,13 @@ __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_fp6_page_kerne
 // FP6 prefill attention: the exact BF16 FA2 schedule (D=256, Br=Bc=64, 128
 // threads, Q/K/V in 96 KiB of base dynamic smem) over the packed U8 cache. K and
 // V tiles are staged by dequantizing the code plane + group scales directly from
-// global memory instead of cp.async from a bf16 cache; the BF16 kernel's
-// single-buffer K/V overlap and barrier placement are preserved verbatim (the
-// empty cp.async commit groups are kept so the prologue's Q staging still drains
-// through the same cp_wait<0>()).
+// global memory instead of cp.async from a bf16 cache. The BF16 kernel's barrier
+// placement is preserved verbatim, but the dequant staging is currently fully
+// synchronous: only the prologue's Q cp.async overlaps with the K(0) staging,
+// with no loop overlap. A later arena variant could overlap the loop stagings
+// with the MMAs. The empty cp.async commit groups are kept purely for structural
+// fidelity to the BF16 kernel; the prologue's Q staging drains through the
+// iteration-0 cp_wait<0>() regardless.
 
 // Dequantize one 8-dim FP6 d-block into 8 bf16 packed as an int4, preserving dim
 // order for the ldmatrix consumers: unpack the six code bytes (byte-wise, safe at
@@ -290,6 +293,10 @@ __device__ __forceinline__ void gqa_prefill_stage_fp6_kv(__nv_bfloat16* dst,
         const int page_off = key & kPagedKVPageMask;
         __nv_bfloat16* p   = &dst[key_l * D + gqa_prefill_swz(key_l, dblock * kGqaKvFp6BlockDims)];
         if (key <= max_query_abs) {
+            // The page/head plane base and group scale are recomputed per d-block
+            // (the plane base repeats across the row's 32 d-blocks, each group
+            // scale across 8) rather than hoisted; the decode ALU dominates the
+            // item, so this is fine, and a row-major inner loop could hoist them.
             const std::int64_t plane =
                 paged_kv_element_offset<kGqaKvFp6LeadingExtent, Geometry::KVHeads>(physical_page,
                                                                                     kv_head,
@@ -599,7 +606,9 @@ __launch_bounds__(kGqaPrefillThreads, 1) __global__
 
         __syncthreads(); // V(kb) dequant visible to all threads before PV; QK done with k_s
 
-        // Prefetch K(kb+1) into the (now-free) K buffer, overlapping the PV MMA.
+        // Stage K(kb+1) into the (now-free) K buffer; synchronous, so it completes
+        // before this iteration's PV MMA, and is consumed by the next loop
+        // iteration's QK MMA after the loop-top barrier.
         if (kb + 1 < n_block_max) {
             physical_page = next_physical_page;
             gqa_prefill_stage_fp6_kv<Geometry>(k_s, cache_k, cache_k_scale, kv_head, (kb + 1) * Bc,
