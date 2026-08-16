@@ -77,7 +77,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
            "[--max-request-mib N] [--request-log-jsonl FILE] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
-            "[--kv-dtype bf16|int8] [--weight-residency all|ffn] [--n-ffn-layers N] [--spec mtp|dflash --draft-tokens N] "
+            "[--kv-dtype bf16|int8|fp6] [--weight-residency all|ffn] [--n-ffn-layers N] [--spec mtp|dflash --draft-tokens N] "
            "[--default-max-tokens N] "
            "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
            "[--lm-head-draft] [--no-thinking] [--preserve-thinking] [--cors] "
