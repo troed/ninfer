@@ -189,8 +189,9 @@ Use `--kv-dtype int8` for large context allocations. The prepared prompt must fi
 `--max-context`; generation stops at the remaining context capacity when necessary.
 `--kv-dtype fp6` is a packed group-64 FP6 (E3M2) format: each 256-dim token/head keeps a 192-byte
 code plane of LSB-first 6-bit codes plus an 8-byte FP16 per-group-64 scale plane (200 B/token/head
-total, versus 264 for INT8-G64 and 512 for BF16), roughly halving the INT8 KV footprint with finer
-near-zero resolution at slightly higher compute cost. It is a runtime kv-dtype orthogonal to weight
+total, versus 264 for INT8-G64 and 512 for BF16), roughly a quarter smaller than the INT8 KV
+footprint (and about half the BF16 footprint) with finer near-zero resolution at slightly higher
+compute cost. It is a runtime kv-dtype orthogonal to weight
 quantization and applies to every registered identity; DFlash speculative KV remains BF16.
 `--kv-capacity N` controls the shared physical Main Text KV pool independently and is rounded up to
 the 64-token page size. `--kv-capacity auto` loads the selected weights, measures the remaining GPU
