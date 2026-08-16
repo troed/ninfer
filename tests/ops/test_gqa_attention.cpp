@@ -533,6 +533,10 @@ double cache_value(const HostCache& cache, bool key, std::int32_t head, std::int
 // key from its cache, so the faithful current-row staging applies to U8 only.
 // The oracle mirrors the split so the criterion measures kernel error, not the
 // codec quantization of rows the kernel never reads from the cache.
+// The thresholds below replicate route resolution and must stay in sync with
+// the wrapper's anonymous-namespace constants (kSmallTChunkTokens=6,
+// kTwoChunkPromptVisibleKeys=512, kThreeChunkPromptVisibleKeys=1024,
+// kMaximumVerifyTokens=16) whenever those change.
 bool stages_current_tokens_bf16(const Geometry& geometry, std::int32_t width,
                                 std::int32_t batch, std::uint32_t envelope_max) {
     if (width >= 1 && width <= 6) return true;
@@ -566,6 +570,11 @@ std::vector<double> ideal_attention(const std::vector<float>& q, const HostCache
         // The decode kernel stages one 6-token chunk per launch; keys appended
         // by earlier chunks are already in the code cache when a later chunk
         // attends, so only the current chunk's rows are read from bf16.
+        // current_token below is computed as position - positions[0], which
+        // assumes the launch's positions are contiguous within the request
+        // (positions[i] == positions[0] + i). All current batch cases build
+        // contiguous positions; a future case with gaps would silently index
+        // the wrong bf16 row and needs a positions-based map instead.
         const std::int32_t chunk_begin = (token / 6) * 6;
         const std::int32_t current_floor = positions[static_cast<std::size_t>(chunk_begin)];
         for (std::int32_t q_head = 0; q_head < geometry.q_heads; ++q_head) {
@@ -1490,6 +1499,15 @@ int run_batch_cases() {
                                {6, {127}, {3}, {0}, MappingPattern::Identity, 499u});
     failures += run_batch_case(kGeometries[0], DType::U8,
                                {6, {127}, {3}, {0}, MappingPattern::Identity, 505u});
+    // FP6 MultiBatch: B>1 routes through the fp6 decode kernel's MultiBatch=true
+    // instantiations. The W=16 masked case drives the ChunkedSmallT batch route
+    // (per-chunk column_begin, differing per-batch contexts and valid windows);
+    // the W=1 unmasked case covers the MultiBatch=true (no Masked) instantiation
+    // with widely separated contexts so per-batch input offsetting is non-trivial.
+    failures += run_batch_case(kGeometries[1], DType::U8,
+                               {16, {49, 2041}, {16, 7}, {1, 0}, MappingPattern::Identity, 506u});
+    failures += run_batch_case(kGeometries[0], DType::U8,
+                               {1, {63, 2048}, {1, 1}, {1, 0}, MappingPattern::Fragmented, 507u});
     failures += run_batch_case(kGeometries[0], DType::BF16,
                                {16, {49}, {7}, {0}, MappingPattern::Identity, 500u});
     failures += run_batch_case(kGeometries[0], DType::BF16,
