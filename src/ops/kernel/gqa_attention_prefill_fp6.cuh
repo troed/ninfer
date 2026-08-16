@@ -13,6 +13,9 @@
 // the same __syncthreads barriers (the active/valid guard keeps warp divergence out
 // of the barrier region).
 
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
+
 #include "ops/common/math.cuh"
 #include "ops/common/memory.cuh"
 #include "ops/kernel/gqa_attention_kv_fp6.cuh"
@@ -20,12 +23,14 @@
 #include "ops/kernel/gqa_attention_prefill_common.cuh"
 #include "ops/kernel/paged_kv_address.cuh"
 
+#include <cstdint>
+
 namespace ninfer::ops {
 
 // One warp per (token, kv_head, 64-d group) unit; two dims per lane, per-warp packed
-// FP6 staging. Scale is the FP16-rounded amax/14; encode inverts the rounded stored
-// scale, and zero groups store scale 0 with all-zero codes (gqa_kv_fp6_encode yields
-// code 0 when the inverse scale is zero, so the store path needs no zero guard).
+// FP6 staging. Scale is the FP16-rounded amax / kGqaKvFp6MaxFinite; encode inverts the
+// rounded scale, and zero groups store scale 0 with all-zero codes (gqa_kv_fp6_encode
+// yields code 0 when the inverse scale is zero, so the store path needs no zero guard).
 template <typename Geometry, typename Metadata>
 __launch_bounds__(256) __global__
     void gqa_attention_prefill_fill_fp6_kernel(const __nv_bfloat16* __restrict__ k,
@@ -44,7 +49,6 @@ __launch_bounds__(256) __global__
     const int units             = tokens * Geometry::KVHeads * kGqaKvQuantGroups;
     const bool active           = unit < units;
 
-    __shared__ __half sh_scale[Warps];
     __shared__ std::uint8_t sh_codes[Warps * 64];
     __shared__ __align__(16) std::uint8_t sh_packed[Warps * 48];
 
@@ -81,11 +85,8 @@ __launch_bounds__(256) __global__
     std::uint8_t* codes  = &sh_codes[warp * 64];
     std::uint8_t* packed = &sh_packed[warp * 48];
 
-    const __half ksh = __float2half_rn(k_abs > 0.0f ? k_abs / 14.0f : 0.0f);
-    if (active && lane == 0) { sh_scale[warp] = ksh; }
-    __syncthreads();
-    const __half kstored = active ? sh_scale[warp] : __half(0.0f);
-    const float  ksinv   = kstored == __half(0.0f) ? 0.0f : 1.0f / static_cast<float>(kstored);
+    const __half ksh   = __float2half_rn(k_abs > 0.0f ? k_abs / kGqaKvFp6MaxFinite : 0.0f);
+    const float  ksinv = ksh == __half(0.0f) ? 0.0f : 1.0f / static_cast<float>(ksh);
     if (active) {
         codes[lane]      = static_cast<std::uint8_t>(gqa_kv_fp6_encode(k0, ksinv) & 0x3Fu);
         codes[lane + 32] = static_cast<std::uint8_t>(gqa_kv_fp6_encode(k1, ksinv) & 0x3Fu);
@@ -106,11 +107,8 @@ __launch_bounds__(256) __global__
     }
     __syncthreads();
 
-    const __half vsh = __float2half_rn(v_abs > 0.0f ? v_abs / 14.0f : 0.0f);
-    if (active && lane == 0) { sh_scale[warp] = vsh; }
-    __syncthreads();
-    const __half vstored = active ? sh_scale[warp] : __half(0.0f);
-    const float  vsinv   = vstored == __half(0.0f) ? 0.0f : 1.0f / static_cast<float>(vstored);
+    const __half vsh   = __float2half_rn(v_abs > 0.0f ? v_abs / kGqaKvFp6MaxFinite : 0.0f);
+    const float  vsinv = vsh == __half(0.0f) ? 0.0f : 1.0f / static_cast<float>(vsh);
     if (active) {
         codes[lane]      = static_cast<std::uint8_t>(gqa_kv_fp6_encode(v0, vsinv) & 0x3Fu);
         codes[lane + 32] = static_cast<std::uint8_t>(gqa_kv_fp6_encode(v1, vsinv) & 0x3Fu);
@@ -155,7 +153,6 @@ __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_fp6_page_kerne
     const int token_end         = min(tokens, tile_position + TokensPerTile - base_position);
     if (token_begin >= token_end) { return; }
 
-    __shared__ __half sh_scale[8];
     __shared__ std::uint8_t sh_codes[8 * 64];
     __shared__ __align__(16) std::uint8_t sh_packed[8 * 48];
 
@@ -189,11 +186,8 @@ __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_fp6_page_kerne
     std::uint8_t* codes  = &sh_codes[warp * 64];
     std::uint8_t* packed = &sh_packed[warp * 48];
 
-    const __half ksh = __float2half_rn(k_abs > 0.0f ? k_abs / 14.0f : 0.0f);
-    if (valid && lane == 0) { sh_scale[warp] = ksh; }
-    __syncthreads();
-    const __half kstored = valid ? sh_scale[warp] : __half(0.0f);
-    const float  ksinv   = kstored == __half(0.0f) ? 0.0f : 1.0f / static_cast<float>(kstored);
+    const __half ksh   = __float2half_rn(k_abs > 0.0f ? k_abs / kGqaKvFp6MaxFinite : 0.0f);
+    const float  ksinv = ksh == __half(0.0f) ? 0.0f : 1.0f / static_cast<float>(ksh);
     if (valid) {
         codes[lane]      = static_cast<std::uint8_t>(gqa_kv_fp6_encode(k0, ksinv) & 0x3Fu);
         codes[lane + 32] = static_cast<std::uint8_t>(gqa_kv_fp6_encode(k1, ksinv) & 0x3Fu);
@@ -218,11 +212,8 @@ __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_fp6_page_kerne
     }
     __syncthreads();
 
-    const __half vsh = __float2half_rn(v_abs > 0.0f ? v_abs / 14.0f : 0.0f);
-    if (valid && lane == 0) { sh_scale[warp] = vsh; }
-    __syncthreads();
-    const __half vstored = valid ? sh_scale[warp] : __half(0.0f);
-    const float  vsinv   = vstored == __half(0.0f) ? 0.0f : 1.0f / static_cast<float>(vstored);
+    const __half vsh   = __float2half_rn(v_abs > 0.0f ? v_abs / kGqaKvFp6MaxFinite : 0.0f);
+    const float  vsinv = vsh == __half(0.0f) ? 0.0f : 1.0f / static_cast<float>(vsh);
     if (valid) {
         codes[lane]      = static_cast<std::uint8_t>(gqa_kv_fp6_encode(v0, vsinv) & 0x3Fu);
         codes[lane + 32] = static_cast<std::uint8_t>(gqa_kv_fp6_encode(v1, vsinv) & 0x3Fu);

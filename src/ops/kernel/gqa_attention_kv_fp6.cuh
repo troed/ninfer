@@ -34,6 +34,14 @@ inline constexpr int kGqaKvFp6LeadingExtent = 192;  // bytes/token code plane
 inline constexpr int kGqaKvFp6Bits          = 6;
 inline constexpr int kGqaKvFp6BlockDims     = 8;
 inline constexpr int kGqaKvFp6BlockBytes    = 6;
+inline constexpr float kGqaKvFp6MaxFinite   = 14.0f;
+
+// 16-byte-aligned token and group strides keep the FP6 prefill fill kernels' int4
+// cache stores aligned on device; a 64-dim group packs to (64 * 6) / 8 = 48 bytes.
+static_assert(kGqaKvFp6LeadingExtent % 16 == 0,
+              "fp6 token code plane must stay 16-byte aligned for int4 cache stores");
+static_assert(((64 * kGqaKvFp6Bits) / 8) % 16 == 0,
+              "fp6 group code stride (48 bytes) must stay 16-byte aligned for int4 cache stores");
 
 // Byte offset of the 8-dim block containing dim d within one token's code plane.
 __host__ __device__ __forceinline__ int gqa_kv_fp6_block_offset(int d) {
@@ -50,7 +58,7 @@ __host__ __device__ __forceinline__ float gqa_kv_fp6_decode(std::uint32_t code) 
     if (exp == 0) {
         mag = static_cast<float>(mant) * 0.0625f;  // m * 2^-4
     } else if (exp == 7) {
-        mag = 14.0f;  // inf/nan clamped to max finite
+        mag = kGqaKvFp6MaxFinite;  // inf/nan clamped to max finite
     } else {
         mag = ldexpf(1.0f + static_cast<float>(mant) * 0.25f,
                      static_cast<int>(exp) - 3);  // exact (1 + m/4) * 2^(e-3)
@@ -90,7 +98,7 @@ __host__ __device__ __forceinline__ std::uint32_t gqa_kv_fp6_encode(float x, flo
     const bool    neg = v < 0.0f;
     const float   mag = fabsf(v);
     std::uint32_t code;
-    if (mag >= 14.0f) {
+    if (mag >= kGqaKvFp6MaxFinite) {
         code = 0x1Bu;  // exp 6, mant 3 = max finite (14.0)
     } else {
         code = gqa_kv_fp6_nearest_magnitude(mag);
