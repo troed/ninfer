@@ -681,18 +681,26 @@ std::string make_chat_chunk_usage(const std::string& id, const std::string& mode
 
 std::string sse_done() { return "data: [DONE]\n\n"; }
 
-std::string make_models_list(const std::string& model_id, std::int64_t created) {
+std::string make_models_list(const std::string& model_id, std::int64_t created,
+                             std::int64_t context_length, std::int64_t max_output_tokens) {
     const Json payload = {{"object", "list"},
                           {"data", Json::array({Json{{"id", model_id},
                                                      {"object", "model"},
                                                      {"created", created},
-                                                     {"owned_by", "ninfer"}}})}};
+                                                     {"owned_by", "ninfer"},
+                                                     {"context_length", context_length},
+                                                     {"max_output_tokens", max_output_tokens}}})}};
     return payload.dump();
 }
 
-std::string make_model_object(const std::string& model_id, std::int64_t created) {
-    const Json payload = {
-        {"id", model_id}, {"object", "model"}, {"created", created}, {"owned_by", "ninfer"}};
+std::string make_model_object(const std::string& model_id, std::int64_t created,
+                              std::int64_t context_length, std::int64_t max_output_tokens) {
+    const Json payload = {{"id", model_id},
+                          {"object", "model"},
+                          {"created", created},
+                          {"owned_by", "ninfer"},
+                          {"context_length", context_length},
+                          {"max_output_tokens", max_output_tokens}};
     return payload.dump();
 }
 

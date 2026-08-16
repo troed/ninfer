@@ -43,8 +43,8 @@ cannot be combined with `--vision`. A later request cannot enable a capability o
 | Method and path | Behavior |
 |---|---|
 | `GET /health` | process health |
-| `GET /v1/models` | configured OpenAI model alias |
-| `GET /v1/models/{id}` | lookup of the configured alias |
+| `GET /v1/models` | configured OpenAI model alias with `context_length` and `max_output_tokens` capacity fields |
+| `GET /v1/models/{id}` | lookup of the configured alias with `context_length` and `max_output_tokens` capacity fields |
 | `POST /v1/chat/completions` | OpenAI-style chat generation |
 | `POST /v1/responses` | OpenAI Responses Core generation, state, typed Items, and SSE |
 | `POST /v1/responses/input_tokens` | Responses prompt-token count without generation |

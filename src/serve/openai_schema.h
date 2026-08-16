@@ -65,9 +65,13 @@ std::string make_chat_chunk_usage(const std::string& id, const std::string& mode
                                   std::int64_t created, const CompletionUsage& usage);
 std::string sse_done();
 
-// /v1/models payloads.
-std::string make_models_list(const std::string& model_id, std::int64_t created);
-std::string make_model_object(const std::string& model_id, std::int64_t created);
+// /v1/models payloads. context_length and max_output_tokens advertise the
+// server's effective context capacity and its output bound to OpenAI/Bifrost
+// model-discovery clients.
+std::string make_models_list(const std::string& model_id, std::int64_t created,
+                             std::int64_t context_length, std::int64_t max_output_tokens);
+std::string make_model_object(const std::string& model_id, std::int64_t created,
+                              std::int64_t context_length, std::int64_t max_output_tokens);
 
 // Error object body.
 std::string make_error_body(const ApiError& error);
