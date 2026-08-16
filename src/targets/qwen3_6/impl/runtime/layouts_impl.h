@@ -697,7 +697,8 @@ make_sequence_planner_impl(DeviceContext& device, const EngineOptions& options,
         .speculative_backend = options.speculative.backend,
         .kv_dtype       = options.kv_cache == KvCacheStorage::BFloat16
                               ? DType::BF16
-                              : (options.kv_cache == KvCacheStorage::Fp6Group64 ? DType::U8 : DType::I8),
+                              : options.kv_cache == KvCacheStorage::Fp6Group64 ? DType::U8
+                                                                               : DType::I8,
         .kv_quant_group = options.kv_cache == KvCacheStorage::BFloat16 ? 0 : qwen3_6::kKvQuantGroup,
         .proposal_head  = options.speculative.proposal_head,
         .features       = qwen3_6::startup_features(options),
