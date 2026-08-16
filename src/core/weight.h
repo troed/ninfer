@@ -12,13 +12,13 @@ inline Tensor as_dense(const Weight& w) {
     void* p        = const_cast<void*>(w.qdata);
     switch (w.ndim) {
     case 1:
-        return Tensor(p, dt, {w.shape[0]});
+        return Tensor(p, w.host, dt, {w.shape[0]});
     case 2:
-        return Tensor(p, dt, {w.shape[0], w.shape[1]});
+        return Tensor(p, w.host, dt, {w.shape[0], w.shape[1]});
     case 3:
-        return Tensor(p, dt, {w.shape[0], w.shape[1], w.shape[2]});
+        return Tensor(p, w.host, dt, {w.shape[0], w.shape[1], w.shape[2]});
     default:
-        return Tensor(p, dt, {w.shape[0], w.shape[1], w.shape[2], w.shape[3]});
+        return Tensor(p, w.host, dt, {w.shape[0], w.shape[1], w.shape[2], w.shape[3]});
     }
 }
 

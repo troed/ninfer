@@ -12,6 +12,7 @@ namespace ninfer::artifact {
 
 enum class TensorPlacement : std::uint8_t {
     Device,
+    Host,
     ValidateOnly,
 };
 
@@ -30,11 +31,20 @@ struct HostMaterialization {
     ObjectHandle object;
 };
 
+struct HostTensorMaterialization {
+    ObjectHandle object;
+    std::uint64_t offset    = 0;
+    std::uint64_t bytes     = 0;
+    std::uint64_t alignment = 0;
+};
+
 struct MaterializationPlan {
-    std::size_t object_count            = 0;
-    std::uint64_t device_capacity_bytes = 0;
+    std::size_t object_count             = 0;
+    std::uint64_t device_capacity_bytes  = 0;
     std::vector<DeviceMaterialization> device_objects;
     std::vector<HostMaterialization> host_objects;
+    std::uint64_t host_capacity_bytes    = 0;
+    std::vector<HostTensorMaterialization> host_tensor_objects;
 };
 
 class Binder {
@@ -48,6 +58,7 @@ public:
     const ObjectDescriptor& descriptor(ObjectHandle handle) const;
     PayloadSpan payload(ObjectHandle handle) const;
     void materialize_on_device(ObjectHandle handle);
+    void materialize_tensor_on_host(ObjectHandle handle);
     void retain_on_host(ObjectHandle handle);
     void validate_only(ObjectHandle handle);
     MaterializationPlan finish();

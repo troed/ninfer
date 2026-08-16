@@ -59,7 +59,11 @@ void set_contiguous_strides(Tensor& tensor) {
 } // namespace
 
 Tensor::Tensor(void* data_in, DType dtype_in, std::initializer_list<std::int32_t> shape)
-    : data(data_in), dtype(dtype_in) {
+    : Tensor(data_in, nullptr, dtype_in, shape) {}
+
+Tensor::Tensor(void* data_in, const void* host_in, DType dtype_in,
+               std::initializer_list<std::int32_t> shape)
+    : data(data_in), host(host_in), dtype(dtype_in) {
     const auto normalized = normalize_shape(shape);
     for (int i = 0; i < 4; ++i) { ne[i] = normalized[i]; }
     set_contiguous_strides(*this);
@@ -104,7 +108,7 @@ Tensor Tensor::view(std::initializer_list<std::int32_t> shape) const {
         throw std::invalid_argument("view element count mismatch");
     }
 
-    return Tensor(data, dtype, shape);
+    return Tensor(data, host, dtype, shape);
 }
 
 Tensor Tensor::reshape(std::initializer_list<std::int32_t> shape) const { return view(shape); }
@@ -119,7 +123,10 @@ Tensor Tensor::slice(int dim, std::int32_t start, std::int32_t len) const {
     const std::int64_t offset = checked_mul_i64(static_cast<std::int64_t>(start), out.nb[dim]);
     auto* bytes_ptr           = static_cast<unsigned char*>(out.data);
     if (bytes_ptr != nullptr) { bytes_ptr += offset; }
-    out.data    = bytes_ptr;
+    out.data = bytes_ptr;
+    auto* host_bytes_ptr = static_cast<const unsigned char*>(out.host);
+    if (host_bytes_ptr != nullptr) { host_bytes_ptr += offset; }
+    out.host = host_bytes_ptr;
     out.ne[dim] = len;
     return out;
 }

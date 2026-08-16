@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <optional>
+#include <vector>
 
 namespace ninfer {
 
@@ -78,6 +79,15 @@ struct DFlashWeights {
     Tensor final_norm;
 };
 
+// One offloaded weight's fixed staging slot. host_source is the object-granularity
+// host-store base (MaterializedArtifact::host_data(handle)); slot is the fixed device
+// address the weight's device planes are re-pointed at.
+struct StagedWeight {
+    const void* host_source = nullptr;
+    void* slot              = nullptr;
+    std::size_t bytes       = 0;
+};
+
 template <class FullProjectionPayload, class GdnProjectionPayload, class MainPostMixerPayload,
           class MtpAttentionPayload, class MtpPostMixerPayload, class DFlashPayload,
           std::size_t FullAttentionLayers, std::size_t GdnLayers>
@@ -88,6 +98,9 @@ struct ModelView {
     using DFlash    = DFlashPayload;
 
     DeviceArena* weights_arena = nullptr;
+    DeviceArena* staging_arena = nullptr;
+    std::vector<StagedWeight> staged_weights;
+    std::size_t host_store_bytes = 0;
     Weight token_embedding;
     std::array<FullLayer, FullAttentionLayers> full_layers;
     std::array<GdnLayer, GdnLayers> gdn_layers;

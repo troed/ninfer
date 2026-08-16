@@ -1,4 +1,5 @@
 #include "core/tensor.h"
+#include "core/weight.h"
 
 #include <cstdint>
 #include <iostream>
@@ -61,7 +62,9 @@ int check_strides(const ninfer::Tensor& t, const std::int64_t (&expected)[4], co
 int main() {
     alignas(16) unsigned char storage[512] = {};
     auto* base                             = storage;
-    int failures                           = 0;
+    alignas(16) unsigned char host_storage[512] = {};
+    auto* host_base                            = host_storage;
+    int failures                               = 0;
 
     ninfer::Tensor t(base, ninfer::DType::BF16, {2, 3, 4});
     failures += check_shape(t, {2, 3, 4, 1}, "t");
@@ -119,6 +122,50 @@ int main() {
     failures += check_shape(reshaped, {6, 4, 1, 1}, "reshaped");
     failures += check_strides(reshaped, {2, 12, 48, 48}, "reshaped");
     failures += expect_i64(reshaped.numel(), 24, "reshaped.numel");
+
+    ninfer::Tensor dual(base, host_base, ninfer::DType::BF16, {2, 3, 4});
+    if (dual.host != host_base) {
+        ++failures;
+        std::cerr << "dual constructor did not record the host address\n";
+    }
+
+    ninfer::Tensor dual_viewed = dual.view({4, 6});
+    if (dual_viewed.host != host_base) {
+        ++failures;
+        std::cerr << "view dropped the host address\n";
+    }
+
+    ninfer::Tensor dual_sliced = dual.slice(1, 1, 2);
+    if (dual_sliced.host != host_base + 4) {
+        ++failures;
+        std::cerr << "slice did not advance the host address by dim-1 stride\n";
+    }
+
+    ninfer::Tensor dual_permuted = dual.permute({2, 1, 0, 3});
+    if (dual_permuted.host != host_base) {
+        ++failures;
+        std::cerr << "permute dropped the host address\n";
+    }
+
+    ninfer::Tensor dual_reshaped = dual.reshape({6, 4});
+    if (dual_reshaped.host != host_base) {
+        ++failures;
+        std::cerr << "reshape dropped the host address\n";
+    }
+
+    ninfer::Weight dual_weight{};
+    dual_weight.qtype        = ninfer::QType::BF16_CTRL;
+    dual_weight.layout       = ninfer::QuantLayout::Contiguous;
+    dual_weight.ndim         = 2;
+    dual_weight.shape[0]     = 2;
+    dual_weight.shape[1]     = 3;
+    dual_weight.qdata        = base;
+    dual_weight.host         = host_base;
+    const ninfer::Tensor dense = ninfer::as_dense(dual_weight);
+    if (dense.host != host_base) {
+        ++failures;
+        std::cerr << "as_dense dropped the host address\n";
+    }
 
     failures += expect_invalid([&] { (void)sliced.reshape({4, 4}); }, "non-contiguous reshape");
     failures += expect_invalid([&] { (void)ninfer::Tensor(base, ninfer::DType::BF16, {2, 0}); },

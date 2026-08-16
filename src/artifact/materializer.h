@@ -22,11 +22,19 @@ struct MaterializationStats {
     std::uint64_t file_bytes              = 0;
     std::uint64_t h2d_bytes               = 0;
     std::uint64_t device_capacity_bytes   = 0;
+    std::uint64_t host_capacity_bytes     = 0;
+    std::uint64_t host_bytes              = 0;
     std::uint64_t retained_resource_bytes = 0;
     std::uint64_t peak_staging_bytes      = 0;
     std::size_t tensor_count              = 0;
     std::size_t resource_count            = 0;
     double upload_seconds                 = 0.0;
+};
+
+struct PinnedHostStoreDeleter {
+    void operator()(std::byte* pointer) const noexcept {
+        if (pointer != nullptr) { (void)cudaFreeHost(pointer); }
+    }
 };
 
 class MaterializedArtifact {
@@ -39,6 +47,9 @@ public:
     MaterializedArtifact& operator=(const MaterializedArtifact&)     = delete;
 
     void* device_data(ObjectHandle handle) const;
+    void* host_data(ObjectHandle handle) const;
+    void* device_data_or_null(ObjectHandle handle) const noexcept;
+    void* host_data_or_null(ObjectHandle handle) const noexcept;
     std::span<const std::byte> resource_bytes(ObjectHandle handle) const;
     std::vector<std::byte> take_resource_bytes(ObjectHandle handle);
 
@@ -52,10 +63,14 @@ private:
 
     struct ObjectStorage {
         void* device = nullptr;
+        void* host   = nullptr;
         std::vector<std::byte> resource;
     };
 
     std::unique_ptr<DeviceArena> device_arena_;
+    std::unique_ptr<std::byte[], PinnedHostStoreDeleter> host_store_;
+    std::size_t host_store_bytes_ = 0;
+    std::byte* host_store_base_   = nullptr;
     std::vector<ObjectStorage> objects_;
     MaterializationStats stats_;
 };

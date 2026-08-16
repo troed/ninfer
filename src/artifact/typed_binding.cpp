@@ -65,8 +65,9 @@ DType dtype_for(NumericFormat format) {
 Weight contiguous_weight(const MaterializedArtifact& materialized, ObjectHandle handle,
                          NumericFormat format, std::int32_t rows, std::int32_t columns) {
     Weight out{};
-    out.payload       = materialized.device_data(handle);
+    out.payload       = materialized.device_data_or_null(handle);
     out.qdata         = out.payload;
+    out.host          = materialized.host_data_or_null(handle);
     out.payload_bytes = static_cast<std::uint64_t>(rows) * columns * dtype_size(dtype_for(format));
     out.qtype         = qtype_for(format);
     out.layout        = QuantLayout::Contiguous;
@@ -85,18 +86,21 @@ Weight row_split_weight(const MaterializedArtifact& materialized, ObjectHandle h
     const std::array<std::uint64_t, 2> shape = {static_cast<std::uint64_t>(rows),
                                                 static_cast<std::uint64_t>(columns)};
     const RowSplitGeometry geometry          = row_split_geometry(format, shape);
-    const auto* bytes = static_cast<const std::byte*>(materialized.device_data(handle));
+    const auto* bytes = static_cast<const std::byte*>(materialized.device_data_or_null(handle));
 
     Weight out{};
     out.payload          = bytes;
+    out.host             = materialized.host_data_or_null(handle);
     out.payload_bytes    = geometry.encoded_bytes;
     out.high_plane_bytes = geometry.high_plane_bytes;
     out.qtype            = qtype_for(format);
     out.layout           = QuantLayout::RowSplit;
     out.group_size       = static_cast<std::uint32_t>(geometry.group_size);
     out.qdata            = bytes;
-    out.qhigh       = geometry.high_plane_bytes == 0 ? nullptr : bytes + geometry.high_plane_offset;
-    out.scales      = bytes + geometry.scale_plane_offset;
+    out.qhigh = bytes == nullptr || geometry.high_plane_bytes == 0
+                    ? nullptr
+                    : bytes + geometry.high_plane_offset;
+    out.scales      = bytes == nullptr ? nullptr : bytes + geometry.scale_plane_offset;
     out.n           = rows;
     out.k           = columns;
     out.group       = static_cast<std::int32_t>(geometry.group_size);
@@ -118,6 +122,8 @@ ObjectHandle bind_tensor(Binder& binder, std::string_view name, NumericFormat fo
                               std::span<const std::uint64_t>(shape.begin(), shape.size()));
     if (placement == TensorPlacement::Device) {
         binder.materialize_on_device(handle);
+    } else if (placement == TensorPlacement::Host) {
+        binder.materialize_tensor_on_host(handle);
     } else {
         binder.validate_only(handle);
     }
@@ -138,7 +144,8 @@ ObjectHandle bind_raw_resource(Binder& binder, std::string_view name) {
 Tensor materialized_tensor(const MaterializedArtifact& materialized, ObjectHandle handle,
                            NumericFormat format,
                            std::initializer_list<std::int32_t> internal_shape) {
-    return Tensor(materialized.device_data(handle), dtype_for(format), internal_shape);
+    return Tensor(materialized.device_data_or_null(handle),
+                  materialized.host_data_or_null(handle), dtype_for(format), internal_shape);
 }
 
 Weight materialized_weight(const MaterializedArtifact& materialized, ObjectHandle handle,

@@ -69,6 +69,19 @@ bool is_35(const Bf16GdnGatingProblem& problem) noexcept {
     return problem.heads == 32 && problem.input_rows == 2048;
 }
 
+std::int32_t device_multiprocessor_count() noexcept {
+    static const std::int32_t count = [] {
+        int device = 0;
+        if (cudaGetDevice(&device) != cudaSuccess) { return 0; }
+        int value = 0;
+        if (cudaDeviceGetAttribute(&value, cudaDevAttrMultiProcessorCount, device) != cudaSuccess) {
+            return 0;
+        }
+        return value;
+    }();
+    return count;
+}
+
 bool schedule_uses_mma(Bf16GdnGatingScheduleId schedule) noexcept {
     switch (schedule) {
     case Bf16GdnGatingScheduleId::MmaCooperativeSplit32:
@@ -82,6 +95,24 @@ bool schedule_uses_mma(Bf16GdnGatingScheduleId schedule) noexcept {
     case Bf16GdnGatingScheduleId::SmallTSplit10:
     case Bf16GdnGatingScheduleId::SimtWarpRowC4:
     case Bf16GdnGatingScheduleId::SimtWarpRowC8:
+        return false;
+    }
+    return false;
+}
+
+bool schedule_is_cooperative_mma(Bf16GdnGatingScheduleId schedule) noexcept {
+    switch (schedule) {
+    case Bf16GdnGatingScheduleId::MmaCooperativeSplit32:
+    case Bf16GdnGatingScheduleId::MmaCooperativeSplit16:
+    case Bf16GdnGatingScheduleId::MmaCooperativeSplit8:
+    case Bf16GdnGatingScheduleId::MmaCooperativeSplit4:
+    case Bf16GdnGatingScheduleId::MmaCooperativeSplit2:
+        return true;
+    case Bf16GdnGatingScheduleId::GemvPairedRows:
+    case Bf16GdnGatingScheduleId::SmallTSplit10:
+    case Bf16GdnGatingScheduleId::SimtWarpRowC4:
+    case Bf16GdnGatingScheduleId::SimtWarpRowC8:
+    case Bf16GdnGatingScheduleId::MmaUnsplit:
         return false;
     }
     return false;
@@ -125,19 +156,55 @@ bool cooperative_grid_is_resident(Bf16GdnGatingScheduleId schedule, std::int32_t
 
 bool cooperative_27_grid_is_resident(Bf16GdnGatingScheduleId schedule, std::int32_t cols) noexcept {
     // BN128 uses 40 KiB of dynamic shared memory. Split8 uses 71 registers with 256 threads;
-    // split4/2 use 62 registers with 512 threads. Each specialization admits two CTAs/SM, hence
-    // 340 resident CTAs device-wide. There are three 16-row tiles per token tile.
-    return cooperative_grid_is_resident(schedule, cols, 128, 3, 340);
+    // split4/2 use 62 registers with 512 threads. Each specialization admits two CTAs/SM. There
+    // are three 16-row tiles per token tile.
+    return cooperative_grid_is_resident(schedule, cols, 128, 3, 2 * device_multiprocessor_count());
 }
 
 bool cooperative_35_grid_is_resident(Bf16GdnGatingScheduleId schedule, std::int32_t cols) noexcept {
     // BN64 uses 24 KiB of dynamic shared memory and two 16-row tiles. With the registered CUDA
     // 13.1/sm_120a build, split32 uses 91/93 registers per thread and admits two CTAs/SM;
-    // split16/8/4/2 use at most 62 registers and admit four CTAs/SM. Across 170 SMs the
-    // device-wide limits are 340 and 680 CTAs respectively.
-    const std::int32_t resident_ctas =
-        schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit32 ? 340 : 680;
-    return cooperative_grid_is_resident(schedule, cols, 64, 2, resident_ctas);
+    // split16/8/4/2 use at most 62 registers and admit four CTAs/SM.
+    const std::int32_t ctas_per_sm =
+        schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit32 ? 2 : 4;
+    return cooperative_grid_is_resident(schedule, cols, 64, 2,
+                                        ctas_per_sm * device_multiprocessor_count());
+}
+
+Bf16GdnGatingScheduleId cooperative_27_fallback(Bf16GdnGatingScheduleId covering, std::int32_t cols) noexcept {
+    // Walk the split-K ladder from the covering schedule downward and return the largest
+    // schedule that is co-resident on this device; the non-cooperative unsplit kernel is the
+    // final fallback when no cooperative schedule fits. Keeping the split-K family preserves
+    // the tuned reduction profile the numeric criterion is calibrated for.
+    constexpr Bf16GdnGatingScheduleId kLadder[] = {
+        Bf16GdnGatingScheduleId::MmaCooperativeSplit8,
+        Bf16GdnGatingScheduleId::MmaCooperativeSplit4,
+        Bf16GdnGatingScheduleId::MmaCooperativeSplit2,
+    };
+    std::size_t index = 0;
+    for (; index < std::size(kLadder) && kLadder[index] != covering; ++index) {}
+    for (; index < std::size(kLadder); ++index) {
+        if (cooperative_27_grid_is_resident(kLadder[index], cols)) { return kLadder[index]; }
+    }
+    return Bf16GdnGatingScheduleId::MmaUnsplit;
+}
+
+Bf16GdnGatingScheduleId cooperative_35_fallback(Bf16GdnGatingScheduleId covering, std::int32_t cols) noexcept {
+    // Split16/8/4/2 share a four-CTA-per-SM profile; walk the ladder downward from the
+    // covering schedule and keep the largest co-resident schedule before falling back to the
+    // non-cooperative unsplit kernel.
+    constexpr Bf16GdnGatingScheduleId kLadder[] = {
+        Bf16GdnGatingScheduleId::MmaCooperativeSplit16,
+        Bf16GdnGatingScheduleId::MmaCooperativeSplit8,
+        Bf16GdnGatingScheduleId::MmaCooperativeSplit4,
+        Bf16GdnGatingScheduleId::MmaCooperativeSplit2,
+    };
+    std::size_t index = 0;
+    for (; index < std::size(kLadder) && kLadder[index] != covering; ++index) {}
+    for (; index < std::size(kLadder); ++index) {
+        if (cooperative_35_grid_is_resident(kLadder[index], cols)) { return kLadder[index]; }
+    }
+    return Bf16GdnGatingScheduleId::MmaUnsplit;
 }
 
 bool candidate_is_legal(Bf16GdnGatingScheduleId schedule,
@@ -354,13 +421,24 @@ Bf16GdnGatingPlan bf16_gdn_gating_resolve_plan(const Bf16GdnGatingProblem& probl
     if (is_27(problem)) {
         for (const RouteSpec& route : k27Routes) {
             if (route.cols.contains(problem.cols)) {
-                return bf16_gdn_gating_resolve_candidate(route.schedule, problem);
+                Bf16GdnGatingScheduleId schedule = route.schedule;
+                if (schedule_is_cooperative_mma(schedule)) {
+                    // Step down the split-K family when the covering schedule cannot be
+                    // co-resident on this device; the non-cooperative unsplit kernel is the
+                    // final fallback and is always legal.
+                    schedule = cooperative_27_fallback(schedule, problem.cols);
+                }
+                return bf16_gdn_gating_resolve_candidate(schedule, problem);
             }
         }
     } else {
         for (const RouteSpec& route : k35Routes) {
             if (route.cols.contains(problem.cols)) {
-                return bf16_gdn_gating_resolve_candidate(route.schedule, problem);
+                Bf16GdnGatingScheduleId schedule = route.schedule;
+                if (schedule_is_cooperative_mma(schedule)) {
+                    schedule = cooperative_35_fallback(schedule, problem.cols);
+                }
+                return bf16_gdn_gating_resolve_candidate(schedule, problem);
             }
         }
     }
@@ -383,7 +461,9 @@ Bf16GdnNormGatingPlan bf16_gdn_norm_gating_resolve_plan(const Bf16GdnGatingProbl
     Bf16GdnGatingPlan control            = bf16_gdn_gating_resolve_plan(problem);
     Bf16GdnNormGatingScheduleId schedule = Bf16GdnNormGatingScheduleId::Composed;
     std::int32_t norm_splits             = 0;
-    if (is_35(problem) && problem.cols <= 16) {
+    if (is_35(problem) && problem.cols <= 16 &&
+        cooperative_35_grid_is_resident(Bf16GdnGatingScheduleId::MmaCooperativeSplit32,
+                                        problem.cols)) {
         control  = bf16_gdn_gating_resolve_candidate(Bf16GdnGatingScheduleId::MmaCooperativeSplit32,
                                                      problem);
         schedule = Bf16GdnNormGatingScheduleId::MmaCooperativeSplit32;

@@ -10,12 +10,14 @@ namespace ninfer {
 
 struct Tensor {
     void* data         = nullptr;
+    const void* host   = nullptr;
     DType dtype        = DType::BF16;
     std::int32_t ne[4] = {1, 1, 1, 1};
     std::int64_t nb[4] = {0, 0, 0, 0};
 
     Tensor() noexcept = default;
     Tensor(void* data, DType dtype, std::initializer_list<std::int32_t> shape);
+    Tensor(void* data, const void* host, DType dtype, std::initializer_list<std::int32_t> shape);
 
     std::int64_t numel() const;
     std::size_t bytes() const;
@@ -46,6 +48,7 @@ enum class QuantLayout : std::uint16_t {
 
 struct Weight {
     const void* payload            = nullptr;
+    const void* host               = nullptr;
     std::uint64_t payload_bytes    = 0;
     std::uint64_t high_plane_bytes = 0;
     QType qtype                    = QType::Q4G64_F16S;

@@ -8,11 +8,13 @@
 
 #include "artifact/binder.h"
 #include "artifact/materializer.h"
+#include "core/arena.h"
 #include "core/tensor.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <variant>
 
@@ -118,7 +120,9 @@ struct ArtifactLoadPlan {
 };
 
 ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_profile,
-                               qwen3_6::StartupFeatures features);
+                               qwen3_6::StartupFeatures features,
+                               ResidencyProfile residency = ResidencyProfile::AllResident,
+                               std::uint32_t resident_ffn_layers = 0);
 
 struct DensePostMixerPayload {
     Weight gate_up;
@@ -185,6 +189,9 @@ public:
     artifact::MaterializedArtifact backing;
     qwen3_6::FrontendResources frontend;
     RuntimeModelView runtime;
+
+private:
+    std::optional<DeviceArena> staging_arena_;
 };
 
 class LoadedModel::Impl {

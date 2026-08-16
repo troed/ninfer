@@ -1,5 +1,7 @@
 #include "targets/qwen3_6_27b/impl/variant.h"
 
+#include "core/device.h"
+
 #include "ninfer/ops/attn_input_proj.h"
 #include "ninfer/ops/gdn_gating_proj.h"
 #include "ninfer/ops/gdn_input_proj.h"
@@ -47,6 +49,13 @@ constexpr ops::LinearPolicy kNvfp4TextPolicy = ops::LinearPolicy::AllowA4;
 
 ops::LinearPolicy text_policy(const Weight& weight) {
     return weight.qtype == QType::NVFP4 ? kNvfp4TextPolicy : ops::LinearPolicy::A16Only;
+}
+
+void stage_weight(const Weight& weight, cudaStream_t stream) {
+    if (weight.host == nullptr) { return; }
+    CUDA_CHECK(cudaMemcpyAsync(const_cast<void*>(weight.payload), weight.host,
+                               static_cast<std::size_t>(weight.payload_bytes),
+                               cudaMemcpyHostToDevice, stream));
 }
 
 constexpr std::size_t kMinimumLeafWorkspaceBytes = 1;
@@ -236,6 +245,8 @@ void Variant::gdn_norm_control_projection(const Tensor& residual, const Tensor& 
 
 void Variant::post_mixer(const Tensor& hidden, const PostMixerWeights& weights, Tensor& residual,
                          qwen3_6::TextPhase, WorkspaceArena& workspace, cudaStream_t stream) {
+    stage_weight(weights.gate_up, stream);
+    stage_weight(weights.down, stream);
     auto scope        = workspace.scope();
     Tensor activation = workspace.alloc(DType::BF16, {TextConfig::intermediate, hidden.ne[1]});
     ops::linear_swiglu(hidden, weights.gate_up, activation, text_policy(weights.gate_up), workspace,

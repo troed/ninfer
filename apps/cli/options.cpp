@@ -58,6 +58,12 @@ KvCacheStorage parse_kv_cache(std::string_view text) {
     throw std::invalid_argument("invalid kv-dtype: " + std::string(text));
 }
 
+ninfer::WeightResidency parse_weight_residency(std::string_view text) {
+    if (text == "all") { return ninfer::WeightResidency::AllResident; }
+    if (text == "ffn") { return ninfer::WeightResidency::FfnOffload; }
+    throw std::invalid_argument("invalid weight-residency: " + std::string(text));
+}
+
 KvCapacityPolicy parse_kv_capacity(const char* text) {
     if (std::string_view(text) == "auto") { return KvCapacityPolicy::automatic(); }
     return KvCapacityPolicy::explicit_capacity(parse_u32(text, "kv-capacity"));
@@ -77,7 +83,7 @@ std::string usage_text(const char* argv0) {
            " <model.ninfer> (--prompt <text>|--messages <messages.json>)\n"
            "       [--max-context N] [--kv-capacity N|auto] [--prefill-chunk N] [--max-new N]\n"
            "       [--device N]\n"
-           "       [--kv-dtype bf16|int8] [--spec mtp|dflash --draft-tokens N]\n"
+           "       [--kv-dtype bf16|int8] [--weight-residency all|ffn] [--n-ffn-layers N] [--spec mtp|dflash --draft-tokens N]\n"
            "       [--lm-head-draft]\n"
            "       [--temperature F] [--top-p F] [--top-k N] [--min-p F]\n"
            "       [--presence-penalty F] [--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -131,6 +137,10 @@ Options parse_options(int argc, char** argv) {
             options.device = parse_device(value(arg));
         } else if (arg == "--kv-dtype") {
             options.kv_cache = parse_kv_cache(value(arg));
+        } else if (arg == "--weight-residency") {
+            options.weight_residency = parse_weight_residency(value(arg));
+        } else if (arg == "--n-ffn-layers") {
+            options.resident_ffn_layers = parse_u32(value(arg), "n-ffn-layers");
         } else if (arg == "--spec") {
             options.speculative.backend = product::parse_speculative_backend(value(arg));
         } else if (arg == "--draft-tokens") {

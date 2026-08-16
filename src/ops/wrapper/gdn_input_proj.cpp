@@ -112,7 +112,7 @@ void require_snapshot_operands(const Tensor& conv_weight, const Tensor& conv_sta
 }
 
 Tensor flatten_columns(const Tensor& tensor, std::int32_t rows, ConvGeometry geometry) {
-    return Tensor(tensor.data, tensor.dtype, {rows, geometry.aggregate_columns});
+    return Tensor(tensor.data, tensor.host, tensor.dtype, {rows, geometry.aggregate_columns});
 }
 
 void require_record_operands(const Tensor& conv_weight, const Tensor& conv_states,

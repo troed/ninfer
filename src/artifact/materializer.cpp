@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -74,6 +75,23 @@ void* MaterializedArtifact::device_data(ObjectHandle handle) const {
     return objects_[handle.index].device;
 }
 
+void* MaterializedArtifact::host_data(ObjectHandle handle) const {
+    if (handle.index >= objects_.size() || objects_[handle.index].host == nullptr) {
+        throw ArtifactError("object handle does not name a host-materialized tensor");
+    }
+    return objects_[handle.index].host;
+}
+
+void* MaterializedArtifact::device_data_or_null(ObjectHandle handle) const noexcept {
+    if (handle.index >= objects_.size()) { return nullptr; }
+    return objects_[handle.index].device;
+}
+
+void* MaterializedArtifact::host_data_or_null(ObjectHandle handle) const noexcept {
+    if (handle.index >= objects_.size()) { return nullptr; }
+    return objects_[handle.index].host;
+}
+
 std::span<const std::byte> MaterializedArtifact::resource_bytes(ObjectHandle handle) const {
     if (handle.index >= objects_.size() || objects_[handle.index].resource.empty()) {
         throw ArtifactError("object handle does not name a materialized resource");
@@ -100,13 +118,16 @@ MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan
     MaterializedArtifact out;
     out.objects_.resize(plan.object_count);
     const std::uint64_t capacity = plan.device_capacity_bytes;
-    if (capacity == 0 || capacity > static_cast<std::uint64_t>(SIZE_MAX)) {
-        throw ArtifactError("artifact tensor backing size is invalid");
+    if (capacity > 0) {
+        if (capacity > static_cast<std::uint64_t>(SIZE_MAX)) {
+            throw ArtifactError("artifact tensor backing size is invalid");
+        }
+        out.device_arena_ = std::make_unique<DeviceArena>(static_cast<std::size_t>(capacity));
+        out.stats_.device_capacity_bytes = capacity;
     }
-    out.device_arena_ = std::make_unique<DeviceArena>(static_cast<std::size_t>(capacity));
-    out.stats_.device_capacity_bytes = capacity;
-    out.stats_.tensor_count          = plan.device_objects.size();
-    out.stats_.resource_count        = plan.host_objects.size();
+    out.stats_.tensor_count =
+        plan.device_objects.size() + plan.host_tensor_objects.size();
+    out.stats_.resource_count = plan.host_objects.size();
 
     for (const HostMaterialization& placement : plan.host_objects) {
         auto& resource            = out.objects_.at(placement.object.index).resource;
@@ -115,6 +136,51 @@ MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan
         out.stats_.retained_resource_bytes += resource.size();
         out.stats_.file_bytes =
             checked_add(out.stats_.file_bytes, resource.size(), "artifact read bytes overflow u64");
+    }
+
+    if (plan.host_capacity_bytes > 0) {
+        if (plan.host_capacity_bytes > static_cast<std::uint64_t>(SIZE_MAX)) {
+            throw ArtifactError("host tensor backing size is invalid");
+        }
+        std::uint64_t store_alignment = 1;
+        for (const HostTensorMaterialization& placement : plan.host_tensor_objects) {
+            store_alignment = std::max(store_alignment, placement.alignment);
+        }
+        const std::size_t store_bytes =
+            static_cast<std::size_t>(plan.host_capacity_bytes);
+        const std::size_t pad =
+            static_cast<std::size_t>(store_alignment - 1);
+        if (store_bytes > std::numeric_limits<std::size_t>::max() - pad) {
+            throw ArtifactError("host tensor backing size is invalid");
+        }
+        const std::size_t pinned_bytes = static_cast<std::size_t>(align_up(
+            store_bytes + pad, Reader::direct_io_alignment, "host tensor backing size is invalid"));
+        void* store_ptr       = nullptr;
+        CUDA_CHECK(cudaMallocHost(&store_ptr, pinned_bytes));
+        auto store = std::unique_ptr<std::byte[], PinnedHostStoreDeleter>(
+            static_cast<std::byte*>(store_ptr));
+        const std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(store_ptr);
+        const std::size_t base_pad = static_cast<std::size_t>(
+            (store_alignment - (addr % store_alignment)) % store_alignment);
+        out.host_store_       = std::move(store);
+        out.host_store_base_  = out.host_store_.get() + base_pad;
+        out.host_store_bytes_ = store_bytes + base_pad;
+        out.stats_.host_capacity_bytes = plan.host_capacity_bytes;
+    }
+    for (const HostTensorMaterialization& placement : plan.host_tensor_objects) {
+        MaterializedArtifact::ObjectStorage& storage = out.objects_.at(placement.object.index);
+        const PayloadSpan payload     = reader.payload(reader.objects().at(placement.object.index));
+        if (payload.data.size() != placement.bytes) {
+            throw ArtifactError("host materialization plan does not match artifact payload");
+        }
+        std::memcpy(out.host_store_base_ + placement.offset, payload.data.data(),
+                    payload.data.size());
+        storage.host = out.host_store_base_ + placement.offset;
+        out.stats_.host_bytes =
+            checked_add(out.stats_.host_bytes, placement.bytes,
+                        "artifact host tensor byte count overflows u64");
+        out.stats_.file_bytes =
+            checked_add(out.stats_.file_bytes, placement.bytes, "artifact read bytes overflow u64");
     }
 
     std::vector<CopyRange> ranges;
@@ -142,7 +208,9 @@ MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan
         });
         total = checked_add(total, placement.bytes, "artifact tensor byte count overflows u64");
     }
-    if (ranges.empty()) { throw ArtifactError("materialization plan has no device tensors"); }
+    if (plan.device_objects.empty() && plan.host_tensor_objects.empty()) {
+        throw ArtifactError("materialization plan has no tensors");
+    }
     std::sort(ranges.begin(), ranges.end(), [](const CopyRange& a, const CopyRange& b) {
         return a.source_begin < b.source_begin;
     });
@@ -171,86 +239,88 @@ MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan
             align_up(span.end - span.begin, alignment, "artifact direct I/O span overflows u64"),
             "artifact direct I/O byte count overflows u64");
     }
-    const std::size_t slot_bytes =
-        static_cast<std::size_t>(std::min<std::uint64_t>(kSlotBytes, aligned_read_bytes));
-    const std::size_t slot_count = static_cast<std::size_t>(
-        std::min<std::uint64_t>(kMaximumSlotCount, 1 + (aligned_read_bytes - 1) / slot_bytes));
-    std::vector<std::unique_ptr<Slot>> slots;
-    slots.reserve(slot_count);
-    for (std::size_t i = 0; i < slot_count; ++i) {
-        slots.push_back(std::make_unique<Slot>(slot_bytes));
-    }
-    out.stats_.peak_staging_bytes = static_cast<std::uint64_t>(slot_bytes) * slot_count;
-
-    std::size_t next_slot  = 0;
     std::size_t next_range = 0;
-    const auto start       = std::chrono::steady_clock::now();
-    if (progress != nullptr && progress->callback) { progress->callback("weights", 0, total); }
-    for (const ReadSpan& span : read_spans) {
-        for (std::uint64_t source = span.begin; source < span.end; source += slot_bytes) {
-            Slot& slot = *slots[next_slot++ % slot_count];
-            slot.wait();
+    if (aligned_read_bytes > 0) {
+        const std::size_t slot_bytes =
+            static_cast<std::size_t>(std::min<std::uint64_t>(kSlotBytes, aligned_read_bytes));
+        const std::size_t slot_count = static_cast<std::size_t>(
+            std::min<std::uint64_t>(kMaximumSlotCount, 1 + (aligned_read_bytes - 1) / slot_bytes));
+        std::vector<std::unique_ptr<Slot>> slots;
+        slots.reserve(slot_count);
+        for (std::size_t i = 0; i < slot_count; ++i) {
+            slots.push_back(std::make_unique<Slot>(slot_bytes));
+        }
+        out.stats_.peak_staging_bytes = static_cast<std::uint64_t>(slot_bytes) * slot_count;
 
-            const std::uint64_t remaining = span.end - source;
-            const std::size_t request     = static_cast<std::size_t>(std::min<std::uint64_t>(
-                slot_bytes,
-                align_up(remaining, alignment, "artifact direct I/O request overflows u64")));
-            auto destination =
-                std::span<std::byte>(static_cast<std::byte*>(slot.buffer.data()), request);
-            const std::size_t bytes_read = reader.read_direct(source, destination);
-            const std::uint64_t required = std::min<std::uint64_t>(request, remaining);
-            if (bytes_read < required) {
-                throw ArtifactError("direct artifact read ended before the planned tensor range");
-            }
-            out.stats_.file_bytes =
-                checked_add(out.stats_.file_bytes, bytes_read, "artifact read bytes overflow u64");
-            const std::uint64_t chunk_end =
-                checked_add(source, bytes_read, "artifact direct I/O result overflows u64");
+        std::size_t next_slot = 0;
+        const auto start      = std::chrono::steady_clock::now();
+        if (progress != nullptr && progress->callback) { progress->callback("weights", 0, total); }
+        for (const ReadSpan& span : read_spans) {
+            for (std::uint64_t source = span.begin; source < span.end; source += slot_bytes) {
+                Slot& slot = *slots[next_slot++ % slot_count];
+                slot.wait();
 
-            while (next_range < ranges.size() && ranges[next_range].source_end <= source) {
-                ++next_range;
-            }
-            std::size_t range_index = next_range;
-            while (range_index < ranges.size() && ranges[range_index].source_begin < chunk_end) {
-                const CopyRange& range         = ranges[range_index];
-                const std::uint64_t copy_begin = std::max(source, range.source_begin);
-                const std::uint64_t copy_end   = std::min(chunk_end, range.source_end);
-                if (copy_begin < copy_end) {
-                    const auto amount = static_cast<std::size_t>(copy_end - copy_begin);
-                    CUDA_CHECK(cudaMemcpyAsync(
-                        range.destination +
-                            static_cast<std::size_t>(copy_begin - range.source_begin),
-                        static_cast<std::byte*>(slot.buffer.data()) +
-                            static_cast<std::size_t>(copy_begin - source),
-                        amount, cudaMemcpyHostToDevice, device.load_stream));
-                    copied =
-                        checked_add(copied, amount, "artifact copied byte count overflows u64");
+                const std::uint64_t remaining = span.end - source;
+                const std::size_t request     = static_cast<std::size_t>(std::min<std::uint64_t>(
+                    slot_bytes,
+                    align_up(remaining, alignment, "artifact direct I/O request overflows u64")));
+                auto destination =
+                    std::span<std::byte>(static_cast<std::byte*>(slot.buffer.data()), request);
+                const std::size_t bytes_read = reader.read_direct(source, destination);
+                const std::uint64_t required = std::min<std::uint64_t>(request, remaining);
+                if (bytes_read < required) {
+                    throw ArtifactError("direct artifact read ended before the planned tensor range");
                 }
-                if (range.source_end <= chunk_end) {
-                    ++range_index;
-                } else {
-                    break;
-                }
-            }
-            next_range = range_index;
-            CUDA_CHECK(cudaEventRecord(slot.event, device.load_stream));
-            slot.pending = true;
+                out.stats_.file_bytes =
+                    checked_add(out.stats_.file_bytes, bytes_read, "artifact read bytes overflow u64");
+                const std::uint64_t chunk_end =
+                    checked_add(source, bytes_read, "artifact direct I/O result overflows u64");
 
-            if (progress != nullptr && progress->callback && copied != last_published &&
-                copied < total) {
-                last_published = copied;
-                progress->callback("weights", copied, total);
+                while (next_range < ranges.size() && ranges[next_range].source_end <= source) {
+                    ++next_range;
+                }
+                std::size_t range_index = next_range;
+                while (range_index < ranges.size() && ranges[range_index].source_begin < chunk_end) {
+                    const CopyRange& range         = ranges[range_index];
+                    const std::uint64_t copy_begin = std::max(source, range.source_begin);
+                    const std::uint64_t copy_end   = std::min(chunk_end, range.source_end);
+                    if (copy_begin < copy_end) {
+                        const auto amount = static_cast<std::size_t>(copy_end - copy_begin);
+                        CUDA_CHECK(cudaMemcpyAsync(
+                            range.destination +
+                                static_cast<std::size_t>(copy_begin - range.source_begin),
+                            static_cast<std::byte*>(slot.buffer.data()) +
+                                static_cast<std::size_t>(copy_begin - source),
+                            amount, cudaMemcpyHostToDevice, device.load_stream));
+                        copied =
+                            checked_add(copied, amount, "artifact copied byte count overflows u64");
+                    }
+                    if (range.source_end <= chunk_end) {
+                        ++range_index;
+                    } else {
+                        break;
+                    }
+                }
+                next_range = range_index;
+                CUDA_CHECK(cudaEventRecord(slot.event, device.load_stream));
+                slot.pending = true;
+
+                if (progress != nullptr && progress->callback && copied != last_published &&
+                    copied < total) {
+                    last_published = copied;
+                    progress->callback("weights", copied, total);
+                }
             }
         }
+        for (const auto& slot : slots) { slot->wait(); }
+        out.stats_.upload_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     }
-    for (const auto& slot : slots) { slot->wait(); }
     CUDA_CHECK(cudaStreamSynchronize(device.load_stream));
     if (copied != total || next_range != ranges.size()) {
         throw ArtifactError("direct materialization did not cover every tensor byte");
     }
     out.stats_.h2d_bytes = copied;
-    out.stats_.upload_seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     if (progress != nullptr && progress->callback) { progress->callback("weights", copied, total); }
     return out;
 }

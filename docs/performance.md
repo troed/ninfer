@@ -467,3 +467,30 @@ Each category contains three fixtures and five seeds per fixture, for 15 samples
 
 The baseline and speculative-decode suites intentionally measure different supported workloads.
 No per-scenario baseline/speculative speedup is reported.
+
+## Host weight offload on smaller `sm_120a` cards
+
+The published tables above characterize the RTX 5090 with all weights device-resident. The same
+27B dense identities also run on smaller `sm_120a` GPUs by placing their per-layer FFN matrices in
+pinned host memory (`--weight-residency ffn`) and streaming them through a fixed device staging
+arena during decode, with a partial-residency knob (`--n-ffn-layers N`) keeping the first N FFN
+layers resident. Cooperative kernels query the live GPU's multiprocessor count and step down their
+split-K schedule when the grid cannot be co-resident, so the 16 GB RTX 5060 Ti (36 SMs) runs
+prefill and decode correctly.
+
+Measurements below are single-request decode throughput from the CLI
+(`build/apps/ninfer`, greedy sampling, 128 generated tokens) on an RTX 5060 Ti 16 GB, CUDA 13.3,
+INT8 group-64 KV, with the `qwen3.8-27b/groupwise-int` artifact. They are transport/execution
+measurements, not a correctness score.
+
+| Config | Decode tok/s | MTP acceptance | Notes |
+|---|---:|---:|---|
+| `--weight-residency ffn --n-ffn-layers 41 --spec mtp --draft-tokens 3` | 10.64 | 52% | 23 of 64 FFN layers streamed |
+| `--weight-residency ffn --n-ffn-layers 41` | 4.59 | — | MTP disabled |
+| `--weight-residency ffn --spec mtp --draft-tokens 3` | 4.51 | — | all 64 FFN layers streamed |
+| `--weight-residency ffn --n-ffn-layers 28 --kv-dtype int8 --kv-capacity 96000 --max-context 96000 --spec mtp --draft-tokens 3` | 8.07 | 60% | 96,000-token KV capacity, 36 of 64 FFN layers streamed |
+
+At 96,000 tokens the INT8 group-64 KV cache costs about 3.21 GiB of device memory, so serving that
+context requires 36 of 64 FFN layers to stream; the 41-resident configuration tops out near
+61,000 tokens of KV capacity on this card. These numbers are for reference against smaller-VRAM
+deployments and are not part of the RTX 5090 published campaign above.
