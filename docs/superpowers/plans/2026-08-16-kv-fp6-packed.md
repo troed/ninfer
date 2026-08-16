@@ -873,6 +873,8 @@ The from_new path (reading `input.k/v` for fresh tokens) can keep the bf16 cp_as
 
 Smem: the bf16 kernel uses static smem (qkv_s + p_s). The FP6 kernel adds `packed_s` (2 × 6144) + `scale_s`, so it needs dynamic smem — set `cudaFuncSetAttribute` in the launcher like the i8 kernel.
 
+**EXECUTION AMENDMENT (Task 9):** implemented with TWO separate packed arenas (K+V both live, 2×32×192 = 12288 B + 512 B scale = 12800 B dynamic), matching the bf16 kernel's barrier structure — a single reused arena would save 6144 B but buy zero occupancy (still 2 blocks/SM) while adding two barriers per tile on the latency path. Total 50816 B (Wc=4) fits the 101376 B sm_120 cap with `__launch_bounds__(128,2)` occupancy intact (2×50816 = 101632 ≤ 102400). cudaFuncSetAttribute(12800) is required for Wc=4 (50816 > 49152 default), Wc=2 (48320 B) is under it. Fused append encodes directly from `input.k/v` (not staged rows). The shared d-block dequant helper lives in the codec header (`gqa_kv_fp6_dequant_dblock8`, using `__floats2bfloat162_rn` instead of device-only `pack_bf16x2` so the host oracle test can compile it — bit-identical on sm_80+).
+
 - [ ] **Step 2: Wire into the decode launcher**
 
 In `src/ops/launcher/gqa_attention_decode.cu`:
