@@ -49,6 +49,7 @@ KvCacheStorage parse_kv_dtype(const char* text) {
     const std::string value(text);
     if (value == "bf16") { return KvCacheStorage::BFloat16; }
     if (value == "int8") { return KvCacheStorage::Int8Group64; }
+    if (value == "fp6") { return KvCacheStorage::Fp6Group64; }
     throw std::invalid_argument("invalid kv-dtype: " + value);
 }
 
