@@ -13,11 +13,11 @@
 // Scale: per 64-dim group. scale = FP16_RNE(amax/14.0f); the decoded value is
 //   fp6_decode(code) * scale. Zero group -> scale 0, all codes 0.
 // Packing: LSB-first bitstream per token. Code i (dim) sits at bit [6i, 6i+6):
-//   byte offset (3i)>>2, bit (6i)&7. A token code plane is 256*6/8 = 192 bytes.
-//   A d-block of 8 consecutive dims (d%8==0) occupies 48 bits at byte offset
-//   (d/8)*6: load a uint64 (8 bytes, unaligned OK) and read code j as
-//   (raw >> 6*j) & 0x3F; encode 8 codes into a uint64 and store bytes [0,4) as
-//   a std::uint32_t and bytes [4,6) as a std::uint16_t.
+//   byte offset (3i)>>2, bit (6i)&7. A full 256-dim token code plane is
+//   256*6/8 = 192 bytes (kGqaKvFp6LeadingExtent). A d-block of 8 consecutive
+//   dims (d%8==0) occupies 48 bits at byte offset (d/8)*6. Pack8/unpack8 are
+//   byte-wise (six scalar byte loads/stores at any alignment), so d-block
+//   offsets 2-mod-4 are always access-safe on device.
 //
 // kGqaKvFp6LeadingExtent must stay in sync with
 // src/ops/wrapper/gqa_attention.cpp::code_leading_extent, which derives the
@@ -25,6 +25,7 @@
 
 #include <cuda_runtime.h>
 
+#include <cmath>
 #include <cstdint>
 
 namespace ninfer::ops {
@@ -82,6 +83,7 @@ __host__ __device__ __forceinline__ std::uint32_t gqa_kv_fp6_nearest_magnitude(f
 // round-to-nearest-even, clamped so any magnitude >= 14.0 maps to the max-finite
 // code (exp 6, mant 3). Bit-identical to the host oracle, which scans the 28
 // magnitude codes for the minimum-error code with ties toward even mantissa.
+// -0.0 and NaN encode to code 0; the -0 code 0x20 is never emitted.
 __host__ __device__ __forceinline__ std::uint32_t gqa_kv_fp6_encode(float x, float inv_scale) {
     if (inv_scale == 0.0f) { return 0; }
     const float   v   = x * inv_scale;
@@ -97,26 +99,50 @@ __host__ __device__ __forceinline__ std::uint32_t gqa_kv_fp6_encode(float x, flo
 }
 
 // Pack the 8 codes for dims [d, d+8) (d%8==0) into 6 bytes at token-plane byte
-// offset gqa_kv_fp6_block_offset(d). Little-endian store: bytes [0,4) as one
-// std::uint32_t and bytes [4,6) as one std::uint16_t.
+// offset gqa_kv_fp6_block_offset(d). Byte-wise store: six scalar byte writes at
+// any alignment are always safe on device, unlike a typed store at a d-block
+// offset 2-mod-4. Out-of-range inputs are masked to 6 bits so they cannot
+// corrupt neighbor codes.
 __host__ __device__ __forceinline__ void gqa_kv_fp6_pack8(const std::uint8_t codes[8],
                                                           std::uint8_t* out) {
-    std::uint64_t raw = 0;
-#pragma unroll
-    for (int i = 0; i < 8; ++i) { raw |= static_cast<std::uint64_t>(codes[i]) << (6 * i); }
-    *reinterpret_cast<std::uint32_t*>(out)      = static_cast<std::uint32_t>(raw);
-    *reinterpret_cast<std::uint16_t*>(out + 4)  = static_cast<std::uint16_t>(raw >> 32);
+    const std::uint32_t mask = (1u << kGqaKvFp6Bits) - 1u;
+    std::uint64_t       raw  = 0;
+    raw |= static_cast<std::uint64_t>(codes[0] & mask) << 0;
+    raw |= static_cast<std::uint64_t>(codes[1] & mask) << 6;
+    raw |= static_cast<std::uint64_t>(codes[2] & mask) << 12;
+    raw |= static_cast<std::uint64_t>(codes[3] & mask) << 18;
+    raw |= static_cast<std::uint64_t>(codes[4] & mask) << 24;
+    raw |= static_cast<std::uint64_t>(codes[5] & mask) << 30;
+    raw |= static_cast<std::uint64_t>(codes[6] & mask) << 36;
+    raw |= static_cast<std::uint64_t>(codes[7] & mask) << 42;
+    out[0] = static_cast<std::uint8_t>(raw >> 0);
+    out[1] = static_cast<std::uint8_t>(raw >> 8);
+    out[2] = static_cast<std::uint8_t>(raw >> 16);
+    out[3] = static_cast<std::uint8_t>(raw >> 24);
+    out[4] = static_cast<std::uint8_t>(raw >> 32);
+    out[5] = static_cast<std::uint8_t>(raw >> 40);
 }
 
 // Unpack the 6 bytes at token-plane byte offset gqa_kv_fp6_block_offset(d) into
-// the 8 codes for dims [d, d+8) (d%8==0).
+// the 8 codes for dims [d, d+8) (d%8==0). Byte-wise load: six scalar byte reads
+// at any alignment are always safe on device, unlike a typed load at a d-block
+// offset 2-mod-4.
 __host__ __device__ __forceinline__ void gqa_kv_fp6_unpack8(const std::uint8_t* in,
                                                             std::uint8_t codes[8]) {
-    const std::uint64_t raw =
-        static_cast<std::uint64_t>(*reinterpret_cast<const std::uint32_t*>(in)) |
-        (static_cast<std::uint64_t>(*reinterpret_cast<const std::uint16_t*>(in + 4)) << 32);
-#pragma unroll
-    for (int i = 0; i < 8; ++i) { codes[i] = static_cast<std::uint8_t>((raw >> (6 * i)) & 0x3Fu); }
+    const std::uint64_t raw = static_cast<std::uint64_t>(in[0]) |
+                              (static_cast<std::uint64_t>(in[1]) << 8) |
+                              (static_cast<std::uint64_t>(in[2]) << 16) |
+                              (static_cast<std::uint64_t>(in[3]) << 24) |
+                              (static_cast<std::uint64_t>(in[4]) << 32) |
+                              (static_cast<std::uint64_t>(in[5]) << 40);
+    codes[0] = static_cast<std::uint8_t>((raw >> 0) & 0x3Fu);
+    codes[1] = static_cast<std::uint8_t>((raw >> 6) & 0x3Fu);
+    codes[2] = static_cast<std::uint8_t>((raw >> 12) & 0x3Fu);
+    codes[3] = static_cast<std::uint8_t>((raw >> 18) & 0x3Fu);
+    codes[4] = static_cast<std::uint8_t>((raw >> 24) & 0x3Fu);
+    codes[5] = static_cast<std::uint8_t>((raw >> 30) & 0x3Fu);
+    codes[6] = static_cast<std::uint8_t>((raw >> 36) & 0x3Fu);
+    codes[7] = static_cast<std::uint8_t>((raw >> 42) & 0x3Fu);
 }
 
 } // namespace ninfer::ops
